@@ -249,18 +249,25 @@ class MCPPremiereProServer {
 // Start the server
 const server = new MCPPremiereProServer();
 
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
+// MCP hosts commonly stop stdio servers by closing stdin. Treat that exactly
+// like SIGINT/SIGTERM so pending file requests are cancelled and the session is
+// invalidated before Node exits.
+let shutdownStarted = false;
+async function shutdown(exitCode = 0): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   console.error('\nShutting down MCP Adobe Premiere Pro Server...');
-  await server.stop();
-  process.exit(0);
-});
+  try {
+    await server.stop();
+  } catch {
+    exitCode = 1;
+  }
+  process.exit(exitCode);
+}
 
-process.on('SIGTERM', async () => {
-  console.error('\nShutting down MCP Adobe Premiere Pro Server...');
-  await server.stop();
-  process.exit(0);
-});
+process.on('SIGINT', () => { void shutdown(0); });
+process.on('SIGTERM', () => { void shutdown(0); });
+process.stdin.on('end', () => { void shutdown(0); });
 
 // Start the server
 server.start().catch((error) => {

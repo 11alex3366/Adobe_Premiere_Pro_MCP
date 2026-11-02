@@ -1,0 +1,391 @@
+لو عندك Adobe Premiere Pro 2023 (الإصدار 23.x)، هتحتاج Node.js 20 أو أحدث، وPython لو هتستخدم توليد SRT المحلي؛ ولو ما عندكش Premiere، ابدأ بتثبيت Creative Cloud وPremiere من Adobe، وبعدها امشِ على الخطوات واحدة واحدة.
+
+============================================================
+دليل تثبيت وتشغيل Adobe Premiere Pro MCP Bridge على Windows
+============================================================
+
+آخر مراجعة لهذا الدليل: 2 نوفمبر 2026
+الدليل يشرح نسخة Windows من المشروع الموجود في هذا المجلد.
+
+قبل أن تبدأ
+-----------
+- Premiere Pro، خادم MCP، ولوحة MCP Bridge لازم يكونوا على نفس الكمبيوتر.
+- استخدم نسخة Premiere مرخصة من Adobe Creative Cloud. هذا المشروع لا يوزع Premiere ولا يتجاوز ترخيصه.
+- الإصدار 23.x يعني Premiere Pro 2023. امتداد CEP في المشروع يعلن دعمه لإصدارات Premiere 14.0 وما بعدها، لكن توافق بعض وظائف Premiere يتأثر بإصدار Adobe. جرّب أول مرة على نسخة احتياطية أو مشروع تجريبي.
+- Node.js مطلوب لتشغيل MCP. Python وfaster-whisper مطلوبان فقط لو هتستخدم توليد SRT المحلي.
+- خادم MCP ينفّذ الأوامر محليًا؛ الصوت لا يُرسل إلى خدمة نسخ سحابية. تنزيل نموذج Whisper لأول مرة يحتاج إنترنت، لكن ملف الصوت نفسه يظل على الكمبيوتر.
+
+1. تثبيت Premiere Pro 2023 (لو غير موجود)
+------------------------------------------
+1) نزّل وثبّت تطبيق Adobe Creative Cloud Desktop من موقع Adobe الرسمي، وسجّل الدخول بحساب لديه ترخيص Premiere.
+2) من Creative Cloud افتح Apps / Your apps، ثم قائمة More actions بجانب Premiere Pro، ثم Other versions.
+3) اختر Premiere Pro 2023 أو إصدار 23.x إذا كان متاحًا لحسابك، ثم Install.
+4) أعد تشغيل الكمبيوتر إذا طلب المثبّت ذلك، وافتح Premiere مرة واحدة حتى يكمل إعداداته.
+5) إذا لم يظهر إصدار 23.x، فالإصدارات القديمة المتاحة تختلف حسب حساب Adobe وسياسة الدعم. اطلبه من مسؤول حسابك أو استخدم إصدارًا متاحًا ومتوافقًا بدل تنزيل نسخة من موقع غير رسمي.
+
+صفحات Adobe:
+- Creative Cloud: https://www.adobe.com/creativecloud/desktop-app.html
+- تثبيت الإصدارات السابقة: https://helpx.adobe.com/download-install/apps/download-install-apps/creative-cloud-apps/install-previous-versions-creative-cloud-apps.html
+- متطلبات Premiere الحالية وروابط متطلبات الإصدارات السابقة: https://helpx.adobe.com/premiere/desktop/get-started/technical-requirements/adobe-premiere-pro-technical-requirements.html
+
+لو Premiere مثبت بالفعل، انتقل للخطوة التالية.
+
+2. تثبيت Git وNode.js
+---------------------
+Git اختياري إذا استلمت مجلد المشروع كاملًا أو ملف ZIP جاهزًا. Git مطلوب إذا هتسحب المشروع من GitHub وتحدّثه بالأوامر.
+
+1) نزّل Node.js من https://nodejs.org/en/download
+2) اختر إصدار LTS لويندوز x64. المشروع يتطلب Node.js 20 أو أحدث؛ استخدم إصدار LTS حديثًا بدل Current.
+3) شغّل المثبّت واترك اختيار إضافة Node.js إلى PATH مفعّلًا.
+4) بعد التثبيت، اقفل PowerShell وافتح نافذة جديدة، ثم تحقق:
+
+    node --version
+    npm.cmd --version
+
+يجب أن يعرض Node إصدار 20 أو أحدث. إذا ظهر أن npm.ps1 ممنوع بسبب PowerShell Execution Policy، استخدم npm.cmd في الأوامر كما في هذا الدليل؛ لا تحتاج إلى تغيير سياسة الجهاز.
+
+روابط رسمية:
+- Node.js: https://nodejs.org/en/download
+- Git for Windows: https://git-scm.com/download/win
+
+3. الحصول على نسخة المشروع وبناؤها
+----------------------------------
+استخدم مجلد المشروع الذي يحتوي على package.json وcep-plugin وsrc. لو تستلم المشروع كملف ZIP، فكّه في مكان ثابت مثل:
+
+    C:\Users\اسمك\Documents\Adobe_Premiere_Pro_MCP
+
+لا تضعه داخل مجلد مؤقت أو تحذف المجلد بعد التثبيت؛ إعداد MCP يشير إلى ملف dist\index.js داخل هذا المجلد.
+
+إذا كان هذا المستودع متاحًا لك على GitHub، افتح PowerShell ونفّذ:
+
+    cd "$env:USERPROFILE\Documents"
+    git clone https://github.com/11alex3366/Adobe_Premiere_Pro_MCP.git
+    cd .\Adobe_Premiere_Pro_MCP
+
+لو استلمت المشروع في مسار مختلف، استخدم cd مع المسار الحقيقي، مثل:
+
+    cd "C:\Users\اسمك\Desktop\Adobe_Premiere_Pro_MCP"
+
+ثبّت المكتبات وابنِ خادم MCP:
+
+    npm.cmd install
+    npm.cmd run build
+
+تأكد أن ملف البناء موجود:
+
+    Test-Path .\dist\index.js
+
+المفروض تكون النتيجة True. أوامر المشروع الأساسية:
+- npm.cmd run build: بناء خادم TypeScript إلى dist.
+- npm.cmd start: تشغيل الخادم يدويًا للاختبار؛ عادةً مش لازم تتركه مفتوحًا إذا كان عميل MCP يشغّله بنفسه.
+- npm.cmd run setup:win: تثبيت لوحة CEP وضبط إعداداتها على Windows.
+- npm.cmd run setup:doctor:win: فحص التثبيت وإعداداته.
+
+4. تثبيت لوحة MCP Bridge (CEP) وإعداد Windows
+----------------------------------------------
+من PowerShell داخل جذر المشروع شغّل:
+
+    npm.cmd run setup:win
+
+هذا الأمر يبني الخادم، ينسخ الامتداد إلى:
+
+    %APPDATA%\Adobe\CEP\extensions\MCPBridgeCEP
+
+ويجهّز مجلد التواصل الافتراضي:
+
+    %TEMP%\premiere-mcp-bridge
+
+كما يفعّل إعداد Adobe CEP المطلوب للمستخدم الحالي، ويضيف إعداد MCP إلى GitHub Copilot في VS Code وClaude Desktop. قد يحدّث مدخل premiere-pro الخاص بهذين العميلين؛ لا تستبدل ملفات إعداداتك يدويًا بملف جديد.
+
+بعد ذلك افحص التثبيت:
+
+    npm.cmd run setup:doctor:win
+
+أو:
+
+    node .\dist\cli.js --doctor
+
+لو كان عندك عميل MCP آخر، أكمل إعداد ذلك العميل في الخطوة 5.
+
+5. توصيل عميل الذكاء الاصطناعي بخادم MCP
+-----------------------------------------
+اختَر الطريقة الخاصة بالعميل الذي تستخدمه. خادم MCP المحلي يعمل عبر stdio؛ لا تفتح له منفذ إنترنت ولا ترفع ملفات المشروع.
+
+أ) Codex CLI / تطبيق Codex
+--------------------------
+افتح PowerShell، وبدّل المسار التالي إلى مجلد المشروع الحقيقي. المسارات التي بها مسافات يجب أن تبقى بين علامتي اقتباس:
+
+    codex mcp add premiere-pro --env "PREMIERE_TEMP_DIR=$env:TEMP\premiere-mcp-bridge" --env "PREMIERE_MCP_TOOLSET=search" -- "C:\Program Files\nodejs\node.exe" "C:\Users\اسمك\Documents\Adobe_Premiere_Pro_MCP\dist\index.js"
+    codex mcp list
+
+لو أمر codex غير موجود، ثبّت/حدّث Codex CLI حسب تعليمات OpenAI أو أضف إعدادًا يدويًا إلى:
+
+    %USERPROFILE%\.codex\config.toml
+
+مثال TOML يدوي. عدّل المسارات حسب جهازك ولا تمسح أقسام MCP الأخرى الموجودة:
+
+    [mcp_servers.premiere-pro]
+    command = "C:\\Program Files\\nodejs\\node.exe"
+    args = ["C:\\Users\\اسمك\\Documents\\Adobe_Premiere_Pro_MCP\\dist\\index.js"]
+    env = { PREMIERE_TEMP_DIR = "C:\\Users\\اسمك\\AppData\\Local\\Temp\\premiere-mcp-bridge", PREMIERE_MCP_TOOLSET = "search" }
+
+ب) OpenCode
+-----------
+أسهل طريقة هي إضافة خادم محلي:
+
+    opencode mcp add premiere-pro --env "PREMIERE_TEMP_DIR=$env:TEMP\premiere-mcp-bridge" -- "C:\Program Files\nodejs\node.exe" "C:\Users\اسمك\Documents\Adobe_Premiere_Pro_MCP\dist\index.js"
+    opencode mcp list
+
+لتوليد SRT الذي قد يستغرق وقتًا أطول، اضبط مهلة عميل OpenCode إلى ساعة (القيمة بالمللي ثانية) في إعدادات OpenCode. مثال داخل opencode.json أو opencode.jsonc؛ ادمج المفتاح mcp مع إعداداتك الموجودة ولا تستبدل الملف كله:
+
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "premiere-pro": {
+          "type": "local",
+          "command": [
+            "C:\\Program Files\\nodejs\\node.exe",
+            "C:\\Users\\اسمك\\Documents\\Adobe_Premiere_Pro_MCP\\dist\\index.js"
+          ],
+          "enabled": true,
+          "timeout": 3600000,
+          "environment": {
+            "PREMIERE_TEMP_DIR": "C:\\Users\\اسمك\\AppData\\Local\\Temp\\premiere-mcp-bridge",
+            "PREMIERE_MCP_TOOLSET": "search"
+          }
+        }
+      }
+    }
+
+ج) VS Code مع GitHub Copilot أو Claude Desktop
+-----------------------------------------------
+إذا شغّلت setup:win، راجع إعدادات MCP في العميل وأعد تشغيله. ملفات الإعداد المعتادة:
+- VS Code / GitHub Copilot: %APPDATA%\Code\User\mcp.json
+- Claude Desktop: %APPDATA%\Claude\claude_desktop_config.json
+
+الإعداد الذي يكتبه مثبت المشروع يشغّل node.exe على dist\index.js ويحدد PREMIERE_TEMP_DIR. إذا أضفت المدخل يدويًا، احتفظ بكل الإعدادات الأخرى الموجودة في الملف.
+
+د) إعداد يدوي عام لأي عميل MCP يستخدم stdio
+--------------------------------------------
+الإعداد المنطقي هو:
+- command: المسار الكامل إلى node.exe.
+- args: المسار الكامل إلى dist\index.js.
+- env.PREMIERE_TEMP_DIR: نفس مجلد التواصل الذي ستحدده في CEP.
+- env.PREMIERE_MCP_TOOLSET: search افتراضيًا أو full لعرض جميع الأدوات مباشرة.
+- مهلة MCP مناسبة لتوليد SRT؛ النسخ قد يأخذ وقتًا عند تحميل النموذج أو عند استخدام CPU.
+
+مهم: اسم الأداة generate_srt لا يحتاج مدخلات. remove_range يأخذ start_time وend_time بالثواني.
+
+6. فتح اللوحة وربط المجلد في Premiere
+-------------------------------------
+1) أغلق Premiere وعميل MCP بالكامل إذا كانا مفتوحين أثناء التثبيت.
+2) افتح Premiere، ثم افتح مشروعًا. لأول اختبار، استخدم مشروعًا تجريبيًا أو نسخة من المشروع.
+3) من القائمة افتح Window > Extensions (Legacy) أو Window > Extensions، ثم MCP Bridge (CEP). تسمية القائمة قد تختلف قليلًا بين تحديثات Premiere.
+4) في حقل Temp Directory استخدم المسار نفسه الذي أعددته لعميل MCP. مع الإعداد الافتراضي في PowerShell يكون:
+
+    $env:TEMP\premiere-mcp-bridge
+
+لإظهار المسار الكامل:
+
+    Join-Path $env:TEMP 'premiere-mcp-bridge'
+
+5) اضغط Save Configuration عند الحاجة. اللوحة تبدأ الجسر عند فتحها، وتعرض حالة الاتصال.
+6) إذا ظهرت أزرار Start Bridge أو Test Connection، اضغط Start Bridge ثم Test Connection.
+7) أعد تشغيل عميل MCP بعد تغيير إعداداته حتى يعيد قراءة السيرفر والأدوات.
+8) في العميل اطلب: “Call verify_premiere_connection and report the active project and sequence. Do not edit anything.”
+
+لا يكفي أن يظهر اسم السيرفر في العميل؛ لازم تكون Premiere مفتوحة، ولوحة MCP Bridge مفتوحة ومتصلة، ومجلد التواصل مطابقًا في الجهتين.
+
+7. تثبيت إعداد توليد SRT المحلي (اختياري)
+-----------------------------------------
+توليد SRT يتم على الكمبيوتر باستخدام faster-whisper. Premiere يصدر الصوت محليًا إلى ملف MP3 أو WAV باستخدام إعداد Premiere/Media Encoder الموجود تلقائيًا؛ لا تختار ملف .epr بنفسك. بعد النسخ، يُنشأ SRT محليًا ثم يستورده Premiere إلى الـSequence النشطة.
+
+1) ثبّت Python 3.11 أو إصدارًا حديثًا متوافقًا، 64-bit، من:
+
+    https://www.python.org/downloads/windows/
+
+في المثبّت فعّل خيار إضافة Python إلى PATH إذا ظهر. لو اخترت إصدارًا مختلفًا عن 3.11، سجّل مساره الكامل لاستخدامه في اللوحة.
+
+2) افتح PowerShell جديدًا وثبّت faster-whisper:
+
+    py -3.11 -m pip install --upgrade pip
+    py -3.11 -m pip install faster-whisper
+    py -3.11 -c "from faster_whisper import WhisperModel; print('faster-whisper is ready')"
+
+إذا كان Python الذي ثبّتّه ليس 3.11، استبدل py -3.11 بمسار python.exe، مثل:
+
+    & "C:\Users\اسمك\AppData\Local\Programs\Python\Python311\python.exe" -m pip install faster-whisper
+
+3) من لوحة MCP Bridge اذهب إلى Local SRT Captions واضبط:
+- Python executable: مسار python.exe نفسه الذي ثبّت عليه faster-whisper. مثال: C:\Users\اسمك\AppData\Local\Programs\Python\Python311\python.exe. ويمكن تجربة python إذا كان PATH مضبوطًا.
+- Whisper model: الافتراضي large-v3؛ يمكن استعمال اسم نموذج أسرع/أصغر مثل small أو medium حسب الجهاز. أول تشغيل ينزّل ملفات النموذج وقد يحتاج مساحة ووقتًا.
+- Compute device: CPU يعمل دون إعداد CUDA؛ اختر GPU (CUDA) فقط مع بطاقة NVIDIA وتعريفات ومكتبات CUDA/cuBLAS/cuDNN المتوافقة مع إصدار faster-whisper الحالي. إذا فشل CUDA ارجع إلى CPU.
+- Language: auto للاكتشاف أو رمز اللغة، مثل ar للعربية أو en للإنجليزية.
+- Words per subtitle: من 1 إلى 15، والافتراضي كلمة واحدة.
+- Text preset (.mogrt): اترك Native caption track لإنشاء captions أصلية. لاختيار شكل MOGRT، يجب أن يكون ملف .mogrt متاحًا في مجلدات قوالب Motion Graphics التي تفحصها اللوحة؛ بعدها اختر اسمه من القائمة.
+
+4) اضغط Generate SRT and Import. يظهر تقدم العملية ومسار ملف SRT النهائي. الصوت وSRT المؤقتان يوضعان في مجلد temp المحلي للنظام. لا تُرسل ملفات الصوت إلى خدمة خارجية.
+5) اختبر أول مرة على مقطع قصير. لا تبدأ بأطول مشروع قبل التأكد من عمل Python والنموذج والمسار.
+
+ملاحظات SRT:
+- تنزيل نموذج Whisper من الإنترنت يحدث عادة عند أول استخدام للنموذج؛ هذا تنزيل لملفات النموذج وليس رفعًا لصوتك.
+- CPU هو الخيار الأقل إعدادًا والأكثر توافقًا، لكنه أبطأ. GPU يتطلب NVIDIA متوافقًا ومكتبات CUDA اللازمة. راجع تعليمات faster-whisper الرسمية قبل تثبيت CUDA: https://github.com/SYSTRAN/faster-whisper
+- مكتبة faster-whisper تتضمن آلية فك الصوت الخاصة بها؛ FFmpeg منفصل ليس شرطًا لنسخ SRT بهذه الطريقة.
+- أداة detect_silence منفصلة عن SRT وتحتاج ffmpeg.exe مثبتًا ومضافًا إلى PATH. تنزيلات Windows مرتبطة من صفحة FFmpeg الرسمية: https://ffmpeg.org/download.html
+- إذا لم يظهر preset نصي، استخدم Native caption track، أو ثبّت/انسخ MOGRT إلى مجلد قوالب Motion Graphics الذي تفحصه اللوحة ثم أغلق وأعد فتحها. لا تفترض أن أي عنصر داخل Project panel سيظهر تلقائيًا في هذه القائمة.
+
+8. قص Range باستخدام remove_range
+----------------------------------
+remove_range أداة تعديل مباشرة وليست للمعاينة. قبل أول تجربة احفظ نسخة من المشروع أو استخدم Sequence تجريبية.
+
+من AI/MCP، القيم بالثواني من بداية الـSequence النشطة:
+
+    remove_range({ "start_time": 5, "end_time": 8 })
+
+هذا يطلب حذف النطاق من 5 إلى 8 ثوانٍ باستخدام تنفيذ Premiere الخاص بـExtract/Ripple على الـSequence النشطة. في لوحة MCP Bridge يوجد قسم Remove Range Test: اكتب Start Time (In) وEnd Time (Out) ثم اضغط Cut Range. واجهة الاختبار وأداة MCP تستخدمان تنفيذ الإزالة نفسه.
+
+تأكد من اسم الـSequence النشطة والمدى قبل القص. لا ترسل أمرًا إذا لم تكن Premiere متصلة أو إذا كانت الـSequence الخاطئة نشطة. احفظ المشروع بعد مراجعة النتيجة. وظائف Premiere قد تختلف باختلاف إصدارها والـSequence وحالة قفل/مزامنة المسارات.
+
+9. كل ما يستطيع MCP فعله
+------------------------
+العدد الحالي في كتالوج المشروع: 285 أداة/عملية. بعض العملاء يعرضون الأدوات الأساسية فقط حتى لا يمتلئ سياق النموذج؛ في هذا الوضع اكتشف أي أداة عن طريق البحث ثم نفّذها من invoke_tool. يمكن تشغيل وضع full، لكن ذلك يعرض مخططات كل الأدوات مباشرة وقد يستهلك سياقًا أكبر.
+
+طريقة الاستخدام العامة:
+1) اتصل بـPremiere أولًا باستخدام verify_premiere_connection.
+2) ابحث عن الوظيفة:
+
+    search_tools({ "query": "trim clip" })
+
+أو ابحث بالاسم/التعبير:
+
+    search_tools({ "pattern": "ripple|remove_range" })
+
+3) اقرأ مخطط المدخلات الدقيق:
+
+    get_tool_schema({ "name": "trim_clip" })
+
+4) نفّذ عبر الاسم الدقيق ومفتاح arguments:
+
+    invoke_tool({ "name": "trim_clip", "arguments": { ... } })
+
+لا تخمّن أسماء الحقول. استخدم schema الذي يرجعه get_tool_schema. الأدوات التي تغيّر Sequence أو تحفظ أو تحذف قد تكون غير قابلة للتراجع؛ اطلب تأكيدًا أو اختبر على نسخة بحسب خطورة التغيير.
+
+الأدوات الأساسية المتاحة مباشرة في وضع البحث:
+- search_tools: بحث طبيعي أو Regex في كتالوج الأدوات.
+- get_tool_schema: عرض مخطط أداة بالاسم.
+- invoke_tool: تشغيل أداة من الكتالوج باسمها ومدخلاتها.
+- verify_premiere_connection: فحص الجسر وإصدار Premiere والمشروع/الـSequence النشطة.
+- list_sequences: عرض الـSequences.
+- get_capabilities: عرض قدرات البيئة ونسخة الخادم وحالة التثبيت.
+- generate_srt: تشغيل سير عمل SRT المحلي بإعدادات اللوحة الحالية، دون مدخلات.
+- remove_range: قص In/Out بالثواني في الـSequence النشطة.
+
+مجموعات الوظائف وأسماؤها في نسخة الكتالوج الحالية
+--------------------------------------------------
+الأسماء التالية مأخوذة من كتالوج البناء الحالي. قد تتغير القائمة في إصدار مستقبلي؛ search_tools هو المصدر الموثوق بعد كل تحديث.
+
+الاتصال والاكتشاف وإدارة الجلسة:
+search_tools, get_tool_schema, invoke_tool, verify_premiere_connection, get_capabilities, get_premiere_state, get_version_info, ping.
+
+المشروعات ومسارات العمل:
+get_project_info, create_project, open_project, save_project, save_project_as, close_project, validate_project_for_export, get_full_project_overview, get_all_project_paths, get_project_scratch_disks, set_scratch_disk_path, set_project_scratch_disk, get_workspaces, set_workspace, build_motion_graphics_demo, assemble_product_spot, build_brand_spot_from_mogrt_and_assets.
+
+استيراد وإدارة الوسائط والـBins والـProxies:
+list_project_items, find_project_item_by_name, find_items_by_media_path, search_project_items, get_project_item_info, get_item_info, get_bin_contents, get_insertion_bin, import_media, import_folder, refresh_media, relink_media, check_offline_media, get_offline_media, set_offline, manage_proxies, has_proxy, detach_proxy, replace_clip_media, import_image_sequence, create_bin, create_smart_bin, move_item_to_bin, move_items_to_bin, rename_project_item, rename_bin, delete_bin, delete_project_item, delete_multiple_project_items, consolidate_duplicates, get_duplicate_media, get_unused_media, get_used_media_report, create_subclip, get_footage_interpretation, set_footage_interpretation, set_color_label, get_color_label, import_fcp_xml, import_edl, import_sequences, import_sequences_from_project.
+
+الـSequences والـCaptions والـWork Area:
+list_sequences, get_active_sequence, set_active_sequence, create_sequence, create_sequence_from_preset, create_sequence_from_clips, duplicate_sequence, delete_sequence, close_sequence, get_sequence_settings, set_sequence_settings, set_sequence_frame_rate, set_sequence_resolution, set_sequence_audio_settings, set_sequence_pixel_aspect_ratio, set_sequence_field_type, set_sequence_display_format, set_sequence_in_out_points, get_sequence_in_out_points, clear_sequence_in_out, set_work_area, get_work_area, is_work_area_enabled, create_subsequence, nest_clips, unnest_sequence, get_sequence_count, get_sequence_structure, get_full_sequence_info, create_caption_track, read_sequence_captions.
+
+الـTimeline والـClips والـTracks:
+list_sequence_tracks, get_full_clip_info, get_clip_properties, get_clip_at_position, get_clip_at_playhead, get_clip_speed, get_qe_clip_info, get_clip_links, get_linked_items, get_total_clip_count, get_timeline_summary, get_timeline_gaps, get_next_edit_point, add_to_timeline, add_to_timeline_batch, insert_from_source, overwrite_from_source, overwrite_clip, remove_from_timeline, remove_selected_clips, remove_range, move_clip, move_clip_to_track, trim_clip, set_clip_start_time, set_clip_position, set_clip_selection, select_clips_by_name, select_clips_by_color, select_clips_in_range, select_disabled_clips, select_all_clips, deselect_all_clips, invert_selection, duplicate_clip, replace_clip, replace_clip_media, split_clip, razor_timeline_at_time, razor_all_tracks, lift_selection, extract_selection, ripple_delete, roll_edit, slide_edit, slip_edit, speed_change, set_clip_speed_qe, reverse_clip, freeze_frame, enable_disable_clip, batch_enable_disable, set_clip_properties, set_clip_properties_batch, set_clip_scale, set_clip_uniform_scale, set_uniform_scale, set_scale_to_frame_size, set_scale_width_height, crop_clip, stabilize_clip, set_clip_rotation, set_clip_anchor_point, set_clip_opacity, set_clip_volume, set_clip_pan, move_playhead_to_edit, set_playhead_position, get_playhead_position, set_start_time, set_target_track, get_target_tracks, set_all_tracks_targeted, add_track, add_tracks, delete_track, lock_track, toggle_track_visibility, rename_track, get_track_info, link_audio_video, link_selection, unlink_selection, select_item, set_item_in_out, clear_item_in_out, set_poster_frame.
+
+الصوت:
+adjust_audio_levels, detect_silence, add_audio_keyframes, setup_ducking, mute_track, apply_audio_effect, apply_audio_effect_to_all_clips, list_available_audio_effects, list_available_audio_transitions, set_sequence_audio_settings, set_clip_volume.
+
+المؤثرات والانتقالات واللون والـKeyframes:
+list_available_effects, list_available_transitions, list_clip_effects, apply_effect, apply_audio_effect, batch_apply_effect, apply_audio_effect_to_all_clips, apply_lut, color_correct, add_transition, add_transition_to_clip, batch_add_transitions, get_effect_properties, set_effect_property, copy_effects_between_clips, copy_effect_values, add_keyframe, get_keyframes, remove_keyframe, remove_keyframe_range, set_keyframe_interpolation, get_value_at_time, set_color_value, get_color_space, set_blend_mode, set_frame_blend, set_time_interpolation, set_anti_alias_quality, get_clip_adjustment_layer.
+
+الرسومات والنصوص والقوالب:
+add_text_overlay, import_mogrt, import_mogrt_from_library, get_mogrt_component, add_adjustment_layer, get_graphics_white_luminance, set_graphics_white_luminance, build_motion_graphics_demo, build_brand_spot_from_mogrt_and_assets, create_caption_track, read_sequence_captions, generate_srt.
+
+العلامات والـMetadata:
+add_marker, delete_marker, update_marker, list_markers, get_sequence_markers_by_type, get_clip_markers, add_marker_to_project_item, get_metadata, set_metadata, get_xmp_metadata, set_xmp_metadata, get_project_panel_metadata, set_project_panel_metadata, add_custom_metadata_field, attach_custom_property.
+
+التصدير والترميز والنقل إلى برامج أخرى:
+get_encoder_presets, get_export_file_extension, export_sequence, export_frame, capture_frame, add_to_render_queue, get_render_queue_status, start_batch_encode, encode_project_item, encode_file, set_transcode_on_ingest, export_as_fcp_xml, export_aaf, export_omf, export_as_project, consolidate_and_transfer, delete_preview_files.
+
+المصدر والتشغيل وعمليات Premiere العامة:
+open_in_source, close_source_monitor, close_all_source_clips, set_source_in_out, get_source_monitor_info, get_source_monitor_position, match_frame, play_source_monitor, play_timeline, stop_playback, detect_scene_edits, scene_edit_detection, undo, redo, multiple_undo, execute_extendscript, evaluate_expression, inspect_dom_object.
+
+ملاحظات على حدود الوظائف:
+- ليست كل وظائف Premiere متاحة من واجهة scripting؛ بعض الأدوات قد ترجع unavailable أو guidance بدل تنفيذ واجهة لا تدعمها Premiere بأمان.
+- export/import قد يحتاج مسارات وPresets صالحة. أدوات التصدير ليست بديلًا عن إعدادات Premiere/AME الموجودة.
+- أدوات assemble/build قد تنشئ أو تعدل Sequence ومحتوى؛ جرّبها على مشروع تجريبي أولًا.
+- أدوات scripting الخام متقدمة وقد تنفّذ أوامر مباشرة داخل Premiere. لا تستخدمها من دون فهم السكريبت.
+
+10. تحديث المشروع مستقبلًا
+--------------------------
+قبل كل تحديث احفظ المشروع واحتفظ بنسخة احتياطية من مجلد MCP، خصوصًا إذا كانت لديك تعديلات خاصة. لا تستخدم git reset --hard ولا تحذف مجلد المشروع أثناء تحديث عميل MCP.
+
+إذا كان لديك clone Git:
+
+    cd "C:\Users\اسمك\Documents\Adobe_Premiere_Pro_MCP"
+    git status
+    git pull
+    npm.cmd install
+    npm.cmd run build
+    npm.cmd run setup:win
+    npm.cmd run setup:doctor:win
+
+لو كانت لديك تغييرات محلية غير محفوظة، لا تنفّذ git pull قبل نسخها/حفظها؛ قد يظهر تعارض يحتاج دمجًا يدويًا. إذا استلمت نسخة ZIP جديدة، فكها في مجلد جديد أولًا ثم قارن ملفات الإعدادات قبل نقل أي تعديلات.
+
+بعد التحديث:
+1) أوقف عميل MCP وأغلق Premiere بالكامل.
+2) شغّل setup:win ليتم نسخ CEP الجديد.
+3) افتح Premiere والعميل من جديد.
+4) افتح MCP Bridge، وتأكد من مجلد temp وحالة Connected.
+5) أعد اختبار verify_premiere_connection ثم الأدوات المطلوبة.
+
+لا تمسح %TEMP% بالكامل. ملفات المشاريع والوسائط ليست داخل مجلد التواصل؛ لا تحذفها كطريقة لحل مشكلة اتصال. الخادم ينظف ملفات bridge protocol الخاصة به عند إنشاء جلسة جديدة.
+
+11. حل المشاكل الشائعة
+----------------------
+
+PowerShell يقول إن npm.ps1 غير مسموح:
+    استخدم npm.cmd بدل npm، مثل npm.cmd run build.
+
+العميل يقول إن MCP Bridge غير شغال:
+    افتح Premiere، وافتح لوحة MCP Bridge (CEP)، اضغط Start Bridge إن ظهر، ثم Test Connection. تأكد أن مسار Temp Directory هو نفسه في إعداد عميل MCP وCEP.
+
+Premiere لا يعرض MCP Bridge في Window > Extensions:
+    أعد تشغيل Premiere بعد npm.cmd run setup:win. شغّل npm.cmd run setup:doctor:win. لا تحذف مجلد المشروع. لو CEP رفض الامتداد، تحقق من تسجيل PlayerDebugMode ومن سجل CEP عند %APPDATA%\Adobe\CEP\logs.
+
+العميل لا يكتشف أدوات مثل trim_clip:
+    هذه الأدوات موجودة في الكتالوج لكن ليست دائمًا في اللائحة الرئيسية. استخدم search_tools ثم get_tool_schema ثم invoke_tool، أو عيّن PREMIERE_MCP_TOOLSET إلى full وأعد تشغيل العميل.
+
+Python لا يبدأ أو faster-whisper غير موجود:
+    شغّل python.exe نفسه من PowerShell ونفّذ -m pip install faster-whisper. ضع مسار python.exe الكامل في اللوحة، ثم أعد فتح اللوحة.
+
+GPU/CUDA يفشل:
+    اختر CPU مؤقتًا. CUDA يتطلب عتاد NVIDIA ومكتبات متوافقة؛ تثبيت تعريف GPU وحده قد لا يكفي. لا تغيّر Python أو CTranslate2 عشوائيًا؛ اتبع صفحة faster-whisper الرسمية.
+
+لا يوجد Audio export preset:
+    لا يوجد حقل اختيار يدوي. لوحة Local SRT تبحث تلقائيًا عن preset MP3/WAV ضمن تثبيت Premiere/Media Encoder. ثبّت/أصلح Premiere أو Media Encoder من Creative Cloud ثم أعد تشغيل Premiere.
+
+remove_range لم يكتمل:
+    افحص أن Premiere متصلة وأن الـSequence الصحيحة نشطة، وأن end_time أكبر من start_time وأن المدى داخل مدة الـSequence. لا تعِد إرسال الأمر بعد timeout قبل فحص Timeline؛ Premiere قد تكون نفّذت الأمر بينما تأخر الرد.
+
+لوحة قديمة بعد التحديث:
+    أعد تشغيل Premiere. إن لزم، من لوحة CEP اختر Reload، أو أعد تنفيذ npm.cmd run setup:win ثم افتح اللوحة من جديد.
+
+12. الروابط والمصادر الرسمية
+----------------------------
+- هذا المشروع: https://github.com/11alex3366/Adobe_Premiere_Pro_MCP
+- متطلبات المشروع وإصدارات Node: https://nodejs.org/en/download
+- تثبيت Python لويندوز: https://www.python.org/downloads/windows/
+- faster-whisper ومتطلبات CPU/GPU: https://github.com/SYSTRAN/faster-whisper
+- OpenCode MCP: https://dev.opencode.ai/docs/mcp-servers/
+- Adobe Creative Cloud وإصدارات Premiere السابقة: https://helpx.adobe.com/download-install/apps/download-install-apps/creative-cloud-apps/install-previous-versions-creative-cloud-apps.html
+- FFmpeg (مطلوب لأداة detect_silence فقط): https://ffmpeg.org/download.html
+
+نهاية الدليل.

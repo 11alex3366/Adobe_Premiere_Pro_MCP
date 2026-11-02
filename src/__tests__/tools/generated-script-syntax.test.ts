@@ -166,7 +166,7 @@ describe("generated ExtendScript is syntactically valid", () => {
     });
   });
 
-  describe("the 112 tools declared in index.ts", () => {
+  describe("the 114 tools declared in index.ts", () => {
     /**
      * This suite only ever parsed expanded.ts. A collapsing \\" escape injected
      * into an index.ts generated script -- the exact failure this file
@@ -224,7 +224,7 @@ describe("generated ExtendScript is syntactically valid", () => {
       // This used to build arguments by dispatching on `_def.typeName`, which is
       // undefined in this zod build, so every field became the string "x" and any
       // tool with a numeric parameter was rejected before emitting. It reached 36
-      // of the 112 local tools and the floor was calibrated to that broken number.
+      // of the 114 local tools and the floor was calibrated to that broken number.
       // Seeding from the schema reaches 77.
       const captured = await localScripts();
 

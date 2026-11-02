@@ -69,7 +69,7 @@ describe('ensureHost', () => {
   });
 
   it('is ready when the panel heartbeat is already started', async () => {
-    mockFs.readFile.mockResolvedValue(JSON.stringify({ t: Date.now(), started: true }));
+  mockFs.readFile.mockResolvedValue(JSON.stringify({ t: Date.now(), started: true, sessionId: 'test-uuid-1234', panelSessionId: 'panel-test' }));
     const bridge = new PremiereProBridge();
     await bridge.initialize();
     const result = await bridge.ensureHost({ launchIfNeeded: false, waitMs: 10 });

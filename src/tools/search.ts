@@ -25,6 +25,8 @@ export const CORE_ADVERTISED_TOOL_NAMES = [
   'invoke_tool',
   'verify_premiere_connection',
   'list_sequences',
+  'generate_srt',
+  'remove_range',
 ] as const;
 
 export type ToolsetMode = 'search' | 'full';

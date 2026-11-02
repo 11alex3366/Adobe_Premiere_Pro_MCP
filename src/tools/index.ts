@@ -135,6 +135,16 @@ export class PremiereProTools {
     // Agents send snake_case keys and stringify numbers. Canonicalize those
     // before Zod so the call reaches Premiere instead of dying as validation.
     args = canonicalizeMcpArgs(args);
+    // remove_range has a deliberately strict snake_case public schema. The
+    // generic canonicalizer keeps both snake_case and camelCase spellings,
+    // which makes that strict object reject otherwise valid MCP arguments.
+    // Collapse the aliases back to the advertised shape before validation.
+    if (name === 'remove_range') {
+      args = {
+        start_time: args.start_time ?? args.startTime,
+        end_time: args.end_time ?? args.endTime,
+      };
+    }
 
     // Validate input arguments, and use what validation produced.
     //
@@ -168,6 +178,9 @@ export class PremiereProTools {
         .slice(0, 8)
         .join(',');
       const firstCode = typeof issues[0]?.code === 'string' ? issues[0].code : undefined;
+      if (name === 'remove_range') {
+        this.logger.error(`[remove_range] stage=argument_validation failed: ${String(error)}`);
+      }
       return {
         success: false,
         status: 'validation',
@@ -180,6 +193,7 @@ export class PremiereProTools {
     }
 
     this.logger.info(`Executing tool: ${name} with args:`, args);
+    if (name === 'remove_range') this.logger.info('[remove_range] stage=dispatch validated arguments; invoking Premiere handler');
 
     const localToolNames = new Set(this.getLocalTools().map((localTool) => localTool.name));
     if (!localToolNames.has(name) && isExpandedTool(name)) {
@@ -189,7 +203,11 @@ export class PremiereProTools {
     try {
       const handler = TOOL_HANDLERS.get(name);
       if (handler) {
-        return await handler.run(this.context, args);
+        const result = await handler.run(this.context, args);
+        if (name === 'remove_range') {
+          this.logger.info(`[remove_range] stage=handler_complete result=${JSON.stringify(result)}`);
+        }
+        return result;
       }
 
       switch (name) {

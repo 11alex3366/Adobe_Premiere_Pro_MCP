@@ -89,4 +89,56 @@ describe('CEP panel heartbeat', () => {
       expect.stringMatching(/"scriptOkAt":/),
     );
   });
+
+  it('reports the active MCP session in its heartbeat', () => {
+    const { bridge, fs } = loadPanel();
+    bridge.getTempDirectory = () => '/tmp/premiere-mcp-bridge';
+    bridge.isConnected = true;
+
+    bridge.writeHeartbeat();
+
+    const heartbeat = JSON.parse(String(fs.writeFileSync.mock.calls[0]?.[1]));
+    expect(heartbeat).toMatchObject({ started: true, sessionId: 'panel-session' });
+    expect(heartbeat.panelSessionId).toBe(bridge.panelSessionId);
+  });
+
+  it('does not dispatch a command left by an older MCP session', () => {
+    const { bridge, fs, handedToEvalScript } = loadPanel();
+    const dir = '/tmp/premiere-mcp-bridge';
+    bridge.getTempDirectory = () => dir;
+    bridge.serverSessionId = 'old-session';
+    bridge.serverSessionActive = true;
+    fs.readFileSync.mockImplementation((file) => {
+      if (String(file).endsWith('/server-session.json')) return JSON.stringify({ sessionId: 'new-session', active: true });
+      return JSON.stringify({ id: 'old-command', sessionId: 'old-session', script: 'return 1;' });
+    });
+
+    bridge.processCommandFile(dir + '/command-old-command.json');
+
+    expect(handedToEvalScript()).toBe('');
+    expect(fs.unlinkSync).toHaveBeenCalledWith(dir + '/command-old-command.json');
+    expect(fs.unlinkSync).toHaveBeenCalledWith(dir + '/active-old-command.json');
+    expect(fs.unlinkSync).toHaveBeenCalledWith(dir + '/claim-old-command.json');
+  });
+
+  it('does not dispatch a command left by an older CEP panel session', () => {
+    const { bridge, fs, handedToEvalScript } = loadPanel();
+    const dir = '/tmp/premiere-mcp-bridge';
+    bridge.getTempDirectory = () => dir;
+    bridge.serverSessionId = 'server-session';
+    bridge.serverSessionActive = true;
+    fs.readFileSync.mockImplementation((file) => {
+      if (String(file).endsWith('/server-session.json')) return JSON.stringify({ sessionId: 'server-session', active: true });
+      return JSON.stringify({ id: 'old-panel-command', sessionId: 'server-session', panelSessionId: 'old-panel', script: 'return 1;' });
+    });
+
+    bridge.processCommandFile(dir + '/command-old-panel-command.json');
+
+    expect(handedToEvalScript()).toBe('');
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      dir + '/response-old-panel-command.json.part',
+      expect.stringContaining('panel restarted'),
+    );
+    expect(fs.unlinkSync).toHaveBeenCalledWith(dir + '/command-old-panel-command.json');
+  });
 });

@@ -258,10 +258,45 @@
             transition: border-color 0.18s ease, box-shadow 0.18s ease;
         }
 
+        input[type="number"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid rgba(129, 170, 197, 0.14);
+            border-radius: 10px;
+            background: var(--input);
+            color: var(--text-0);
+            font-size: 13px;
+            outline: none;
+        }
+
         input[type="text"]:focus {
             border-color: rgba(95, 211, 255, 0.48);
             box-shadow: 0 0 0 3px rgba(95, 211, 255, 0.1);
         }
+
+        select,
+        input[type="range"] {
+            width: 100%;
+            margin: 4px 0 12px;
+        }
+
+        select {
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            padding: 9px 10px;
+            color: var(--text-0);
+            background: var(--input);
+        }
+
+        .range-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .range-row input { flex: 1; }
+        .range-value { min-width: 22px; color: var(--accent); font-weight: 700; text-align: right; }
+        .srt-status { margin-top: 10px; overflow-wrap: anywhere; }
 
         .toggle-row {
             display: flex;
@@ -589,6 +624,42 @@
 
         <section class="panel">
             <div class="panel-title">
+                <h2>Local SRT Captions</h2>
+                <span>Whisper runs on this PC</span>
+            </div>
+            <label for="srtPython">Python executable</label>
+            <input type="text" id="srtPython" placeholder="python or C:\\Python311\\python.exe">
+            <label for="srtModel">Whisper model</label>
+            <input type="text" id="srtModel" placeholder="large-v3">
+            <label for="srtDevice">Compute device</label>
+            <select id="srtDevice"><option value="cpu">CPU</option><option value="cuda">GPU (CUDA)</option></select>
+            <label for="srtLanguage">Language</label>
+            <input type="text" id="srtLanguage" placeholder="auto (or ar, en, …)">
+            <label for="srtWords">Words per subtitle <span id="srtWordsValue">1</span></label>
+            <div class="range-row"><input id="srtWords" type="range" min="1" max="15" value="1" aria-label="Words per subtitle"></div>
+            <div class="micro-copy" id="srtAudioPresetStatus">Finding Premiere’s MP3/WAV audio export preset…</div>
+            <label for="srtTextPreset">Text preset (.mogrt)</label>
+            <select id="srtTextPreset"><option value="">Native caption track</option></select>
+            <div class="button-row"><button class="primary" id="srtGenerateButton" type="button">Generate SRT and Import</button></div>
+            <div class="micro-copy srt-status" id="srtStatus" role="status" aria-live="polite">Set Python and install faster-whisper, then generate from the active sequence. In/Out is used when present.</div>
+            <div class="micro-copy srt-status" id="srtResult"></div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
+                <h2>Remove Range Test</h2>
+                <span>Active sequence · seconds</span>
+            </div>
+            <label for="removeRangeIn">Start Time (In)</label>
+            <input type="number" id="removeRangeIn" min="0" step="0.001" value="5">
+            <label for="removeRangeOut">End Time (Out)</label>
+            <input type="number" id="removeRangeOut" min="0" step="0.001" value="7">
+            <div class="button-row"><button class="primary" id="removeRangeButton" type="button">Cut Range</button></div>
+            <div class="micro-copy srt-status" id="removeRangeStatus" role="status" aria-live="polite">Runs the same Premiere-side remove_range function used by MCP.</div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
                 <h2>Configuration</h2>
                 <span>Shared temp directory</span>
             </div>
@@ -653,5 +724,7 @@
 
     <script src="CSInterface.js"></script>
     <script src="bridge-cep.js"></script>
+    <script src="local-srt.js"></script>
+    <script src="remove-range-test.js"></script>
 </body>
 </html>

@@ -34,6 +34,7 @@ describe('bridge file-queue protocol', () => {
   const dir = '/tmp/premiere-mcp-bridge-test';
   const commandPath = path.join(dir, 'command-test-uuid-1234.json');
   const responsePath = path.join(dir, 'response-test-uuid-1234.json');
+  const activePath = path.join(dir, 'active-test-uuid-1234.json');
   const stagingPath = path.join(dir, '.tmp-test-uuid-1234.json');
 
   beforeEach(() => {
@@ -44,6 +45,7 @@ describe('bridge file-queue protocol', () => {
     mockFs.writeFile.mockResolvedValue(undefined);
     mockFs.rename.mockResolvedValue(undefined);
     mockFs.unlink.mockResolvedValue(undefined);
+    mockFs.readdir.mockResolvedValue([] as never);
   });
 
   afterEach(() => {
@@ -65,7 +67,7 @@ describe('bridge file-queue protocol', () => {
 
       await bridge.executeScript('return 1;');
 
-      expect(mockFs.writeFile).toHaveBeenCalledWith(stagingPath, expect.any(String));
+      expect(mockFs.writeFile).toHaveBeenCalledWith(stagingPath, expect.stringContaining('"sessionId":"test-uuid-1234"'));
       expect(mockFs.writeFile).not.toHaveBeenCalledWith(commandPath, expect.any(String));
       expect(mockFs.rename).toHaveBeenCalledWith(stagingPath, commandPath);
     });
@@ -78,7 +80,7 @@ describe('bridge file-queue protocol', () => {
 
       await bridge.executeScript('return 1;');
 
-      const staged = mockFs.writeFile.mock.calls[0][0] as string;
+      const staged = mockFs.writeFile.mock.calls.find(([filePath]) => String(filePath) === stagingPath)?.[0] as string;
       expect(path.basename(staged).startsWith('command-')).toBe(false);
     });
 
@@ -86,12 +88,67 @@ describe('bridge file-queue protocol', () => {
       // Nothing else ever matches that name, so a failed rename leaves it on disk
       // for good. The shared bridge directory is not removed on shutdown, so these
       // accumulate there indefinitely.
-      mockFs.rename.mockRejectedValue(new Error('EXDEV'));
+      mockFs.rename.mockResolvedValueOnce(undefined);
+      mockFs.rename.mockRejectedValueOnce(new Error('EXDEV'));
       const bridge = await readyBridge();
 
       await expect(bridge.executeScript('return 1;')).rejects.toThrow();
 
       expect(mockFs.unlink).toHaveBeenCalledWith(stagingPath);
+    });
+  });
+
+  describe('session lifecycle', () => {
+    it('starts a new session and removes only stale bridge protocol files', async () => {
+      mockFs.readdir.mockResolvedValue([
+        'command-old-session.json',
+        'response-old-session.json',
+        'active-old-session.json',
+        'claim-old-session.json',
+        '.tmp-old-session.json',
+        '.server-session-old-session.tmp',
+        'config.json',
+        'remove-range-diagnostics.log',
+        'premiere-mcp-diagnostics-latest.json',
+        'bridge-heartbeat.json',
+      ] as never);
+
+      const bridge = await readyBridge();
+      const sessionWrite = mockFs.writeFile.mock.calls.find(([filePath]) => String(filePath).endsWith('.server-session-test-uuid-1234.tmp'));
+      expect(JSON.parse(String(sessionWrite?.[1]))).toMatchObject({ sessionId: 'test-uuid-1234', active: true });
+      for (const name of ['command-old-session.json', 'response-old-session.json', 'active-old-session.json', 'claim-old-session.json', '.tmp-old-session.json', '.server-session-old-session.tmp']) {
+        expect(mockFs.unlink).toHaveBeenCalledWith(path.join(dir, name));
+      }
+      expect(mockFs.unlink).not.toHaveBeenCalledWith(path.join(dir, 'config.json'));
+      expect(mockFs.unlink).not.toHaveBeenCalledWith(path.join(dir, 'remove-range-diagnostics.log'));
+      expect(mockFs.unlink).not.toHaveBeenCalledWith(path.join(dir, 'bridge-heartbeat.json'));
+    });
+
+    it('uses a fresh session ID on consecutive server restarts', async () => {
+      const uuid = jest.requireMock('node:crypto').randomUUID as jest.Mock;
+      uuid.mockReturnValueOnce('session-one').mockReturnValueOnce('session-two').mockReturnValueOnce('session-three');
+      await readyBridge();
+      await readyBridge();
+      await readyBridge();
+
+      const sessionWrites = mockFs.writeFile.mock.calls.filter(([filePath]) => String(filePath).includes('.server-session-'));
+      expect(JSON.parse(String(sessionWrites[0]?.[1]))).toMatchObject({ sessionId: 'session-one', active: true });
+      expect(JSON.parse(String(sessionWrites[1]?.[1]))).toMatchObject({ sessionId: 'session-two', active: true });
+      expect(JSON.parse(String(sessionWrites[2]?.[1]))).toMatchObject({ sessionId: 'session-three', active: true });
+    });
+
+    it('cancels pending file requests and clears their protocol files on shutdown', async () => {
+      const bridge = await readyBridge();
+      mockFs.readFile.mockRejectedValue(new Error('ENOENT'));
+      const pending = bridge.executeScript('return 1;', 20000);
+      await Promise.resolve();
+      await bridge.cleanup();
+
+      await expect(pending).rejects.toThrow(/session ended|cancelled/i);
+      expect(mockFs.unlink).toHaveBeenCalledWith(commandPath);
+      expect(mockFs.unlink).toHaveBeenCalledWith(responsePath);
+      expect(mockFs.unlink).toHaveBeenCalledWith(activePath);
+      expect(mockFs.unlink).toHaveBeenCalledWith(path.join(dir, 'claim-test-uuid-1234.json'));
     });
   });
 
@@ -142,6 +199,7 @@ describe('bridge file-queue protocol', () => {
 
       expect(mockFs.unlink).toHaveBeenCalledWith(commandPath);
       expect(mockFs.unlink).toHaveBeenCalledWith(responsePath);
+      expect(mockFs.unlink).toHaveBeenCalledWith(activePath);
     });
     it('removes both files on the ordinary path too', async () => {
       mockFs.readFile.mockResolvedValue(JSON.stringify({ result: { ok: true } }));
@@ -151,6 +209,7 @@ describe('bridge file-queue protocol', () => {
 
       expect(mockFs.unlink).toHaveBeenCalledWith(commandPath);
       expect(mockFs.unlink).toHaveBeenCalledWith(responsePath);
+      expect(mockFs.unlink).toHaveBeenCalledWith(activePath);
     });
 
     it('does not let a cleanup failure mask the result', async () => {
@@ -180,7 +239,7 @@ describe('bridge file-queue protocol', () => {
     it('tells the caller to click Start Bridge when the panel is open but idle', async () => {
       mockFs.readFile.mockImplementation(async (file) => {
         if (String(file) === heartbeatPath) {
-          return JSON.stringify({ t: Date.now(), started: false });
+          return JSON.stringify({ t: Date.now(), started: false, sessionId: 'test-uuid-1234', panelSessionId: 'panel-test' });
         }
         throw new Error('ENOENT');
       });
@@ -194,7 +253,7 @@ describe('bridge file-queue protocol', () => {
     it('keeps waiting when the panel is alive and working on the command', async () => {
       mockFs.readFile.mockImplementation(async (file) => {
         if (String(file) === heartbeatPath) {
-          return JSON.stringify({ t: Date.now(), started: true });
+          return JSON.stringify({ t: Date.now(), started: true, sessionId: 'test-uuid-1234', panelSessionId: 'panel-test' });
         }
         throw new Error('ENOENT');
       });
@@ -208,13 +267,42 @@ describe('bridge file-queue protocol', () => {
     it('says the scripting thread is stuck when the panel heartbeat is fresh but ExtendScript has not returned', async () => {
       mockFs.readFile.mockImplementation(async (file) => {
         if (String(file) === heartbeatPath) {
-          return JSON.stringify({ t: Date.now(), started: true, scriptOkAt: Date.now() - 20000 });
+          return JSON.stringify({ t: Date.now(), started: true, sessionId: 'test-uuid-1234', panelSessionId: 'panel-test', scriptOkAt: Date.now() - 20000 });
         }
         throw new Error('ENOENT');
       });
       const bridge = await readyBridge();
 
       await expect(bridge.executeScript('return 1;', 700)).rejects.toThrow(/scripting thread is stuck/i);
+    });
+
+    it('keeps waiting for a command CEP accepted when its heartbeat goes stale during ExtendScript', async () => {
+      let heartbeatReads = 0;
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) return JSON.stringify({ t: ++heartbeatReads === 1 ? Date.now() : 1, started: true, sessionId: 'test-uuid-1234', panelSessionId: 'panel-test' });
+        if (String(file) === activePath) return JSON.stringify({ accepted: true, sessionId: 'test-uuid-1234', panelSessionId: 'panel-test' });
+        throw new Error('ENOENT');
+      });
+      const bridge = await readyBridge();
+      const started = Date.now();
+
+      await expect(bridge.executeScript('return 1;', 1800)).rejects.toThrow(/Bridge response timeout/i);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1800);
+    });
+
+    it('cancels a pending request when the CEP panel session changes', async () => {
+      const heartbeatPath = path.join(dir, 'bridge-heartbeat.json');
+      let heartbeatReads = 0;
+      mockFs.readFile.mockImplementation(async (file) => {
+        if (String(file) === heartbeatPath) {
+          const panelSessionId = ++heartbeatReads === 1 ? 'panel-before-restart' : 'panel-after-restart';
+          return JSON.stringify({ t: Date.now(), started: true, sessionId: 'test-uuid-1234', panelSessionId });
+        }
+        throw new Error('ENOENT');
+      });
+      const bridge = await readyBridge();
+
+      await expect(bridge.executeScript('return 1;', 5000)).rejects.toThrow(/panel restarted/i);
     });
   });
 });

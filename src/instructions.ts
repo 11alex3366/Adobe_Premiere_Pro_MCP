@@ -19,6 +19,7 @@ export const MCP_SERVER_INSTRUCTIONS = [
   '',
   'Editing:',
   '- Inspect before mutating. Prefer list_sequences, search_tools for list_project_items / list_sequence_tracks, or the premiere://project/* resources unless the user already gave exact IDs.',
+  '- Fast path: after the session connection check, when the user gives a specific time range for remove_range, call remove_range immediately with those seconds. Do not inspect the project or call other editing tools first; the tool validates the active sequence and range. After success, give one brief confirmation and stop if that was the only task, or continue directly to the next requested task. Do not add a post-cut analysis or retry automatically.',
   '- Report real Premiere limitations instead of claiming success. Do not invent file paths, clip ids, or .mogrt/.sqpreset files.',
   '- replace_clip with preserveEffects (default true) restores trim, enabled, and Motion, and re-applies other effects. move_clip_to_track restores source in/out and refuses an occupied destination unless overwrite is true.',
 ].join('\n');

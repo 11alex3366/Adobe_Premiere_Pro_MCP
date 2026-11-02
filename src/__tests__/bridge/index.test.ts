@@ -152,7 +152,7 @@ describe('PremiereProBridge', () => {
       removeOnCompletion: false,
     });
 
-    const commandFile = JSON.parse(String(mockFs.writeFile.mock.calls[0]?.[1] ?? '{}'));
+    const commandFile = JSON.parse(String(mockFs.writeFile.mock.calls.find(([filePath]) => String(filePath).endsWith('.tmp-test-uuid-1234.json'))?.[1] ?? '{}'));
     const command = String(commandFile.script ?? '');
     expect(command).toContain('var sequenceId = "seq-\\"quoted\\""');
     expect(command).toContain('encoderRangeConstant = "ENCODE_IN_TO_OUT"');
@@ -178,7 +178,7 @@ describe('PremiereProBridge', () => {
       expect(result.success).toBe(false);
       expect(result.code).toBe('MEDIA_ENCODER_NOT_INSTALLED');
       expect(result.error).toContain('not sent to Premiere');
-      expect(mockFs.writeFile).not.toHaveBeenCalled();
+      expect(mockFs.writeFile.mock.calls.some(([filePath]) => String(filePath).includes('command-'))).toBe(false);
     } finally {
       if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
     }
@@ -228,7 +228,7 @@ describe('PremiereProBridge', () => {
       const result = await bridge.renderSequence('seq-1', '/tmp/out.mp4', '/tmp/preset.epr');
 
       expect(result.code).toBe('MEDIA_ENCODER_NOT_INSTALLED');
-      expect(mockFs.writeFile).not.toHaveBeenCalled();
+      expect(mockFs.writeFile.mock.calls.some(([filePath]) => String(filePath).includes('command-'))).toBe(false);
     } finally {
       if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
     }
@@ -245,7 +245,7 @@ describe('PremiereProBridge', () => {
     expect(result.success).toBe(false);
     expect(result.blockedBeforePremiere).toBe(true);
     expect(result.error).toContain('Unsupported import format ".ass"');
-    expect(mockFs.writeFile).not.toHaveBeenCalled();
+    expect(mockFs.writeFile.mock.calls.some(([filePath]) => String(filePath).includes('command-'))).toBe(false);
   });
 
   it('creates projects using a concrete .prproj path and verifies activation', async () => {
@@ -317,7 +317,7 @@ describe('PremiereProBridge', () => {
 
     await bridge.initialize();
     const result: any = await bridge.createSequence('Safe Sequence', '/tmp/sequence.sqpreset');
-    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls.find(([filePath]) => String(filePath).endsWith('.tmp-test-uuid-1234.json'))?.[1] as string);
 
     expect(result.success).toBe(true);
     expect(result.id).toBe('seq-123');
@@ -340,7 +340,7 @@ describe('PremiereProBridge', () => {
       { projectItemId: 'pi-1', trackIndex: 0, time: 0, linkAudio: false },
       { projectItemId: 'pi-2', trackIndex: 0, time: 5 } // omitted → defaults to true
     ]);
-    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls.find(([filePath]) => String(filePath).endsWith('.tmp-test-uuid-1234.json'))?.[1] as string);
 
     // per-clip linkAudio is embedded in the specs (explicit false + defaulted true)
     expect(commandPayload.script).toContain('"linkAudio":false');
@@ -364,7 +364,7 @@ describe('PremiereProBridge', () => {
       { projectItemId: 'pi-1', trackIndex: 0, time: 0 },
       { projectItemId: 'pi-2', trackIndex: 0, time: 5 }
     ]);
-    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string);
+    const commandPayload = JSON.parse(mockFs.writeFile.mock.calls.find(([filePath]) => String(filePath).endsWith('.tmp-test-uuid-1234.json'))?.[1] as string);
 
     // aggregate success is derived from the placed count, not hard-coded true
     expect(commandPayload.script).toContain('var allPlaced = (specs.length > 0 && placed === specs.length)');

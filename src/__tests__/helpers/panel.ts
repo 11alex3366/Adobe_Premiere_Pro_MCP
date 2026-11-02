@@ -31,7 +31,7 @@ export interface LoadedPanel {
   /** Whatever the panel last handed to evalScript. */
   handedToEvalScript: () => string;
   /** The fs stub the panel closed over at load. */
-  fs: { writeFileSync: jest.Mock; existsSync: jest.Mock };
+  fs: { writeFileSync: jest.Mock; existsSync: jest.Mock; readdirSync: jest.Mock; readFileSync: jest.Mock; openSync: jest.Mock; writeSync: jest.Mock; closeSync: jest.Mock; unlinkSync: jest.Mock; renameSync: jest.Mock };
 }
 
 /** Minimal stand-ins for what the panel pulls in at load time. */
@@ -64,13 +64,16 @@ export function loadPanel(): LoadedPanel {
   const source = realFs.readFileSync(PANEL_PATH, 'utf8');
   let handed = '';
   const fsStub = {
-    existsSync: jest.fn(() => false), mkdirSync: () => {}, readdirSync: () => [],
-    readFileSync: () => '', writeFileSync: jest.fn(), unlinkSync: () => {},
-    renameSync: () => {}, statSync: () => ({ isDirectory: () => false }),
+    existsSync: jest.fn(() => false), mkdirSync: () => {}, readdirSync: jest.fn(() => []),
+    readFileSync: jest.fn((file: string) => String(file).endsWith('/server-session.json')
+      ? JSON.stringify({ sessionId: 'panel-session', active: true })
+      : ''), writeFileSync: jest.fn(), unlinkSync: jest.fn(),
+    openSync: jest.fn(), writeSync: jest.fn(), closeSync: jest.fn(),
+    renameSync: jest.fn(), statSync: () => ({ isDirectory: () => false }),
   };
 
   const sandbox: Record<string, unknown> = {
-    window: {} as Record<string, unknown>,
+    window: { addEventListener() {} } as Record<string, unknown>,
     document: { addEventListener() {}, getElementById: () => null, readyState: 'complete' },
     navigator: { userAgent: 'test' },
     setTimeout: (fn: (...args: unknown[]) => void, ms?: number) => setTimeout(fn, ms) as unknown as number,

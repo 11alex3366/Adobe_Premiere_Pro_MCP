@@ -434,6 +434,10 @@
         this.evalScriptBusy = false;
         this.evalScriptQueue = [];
         this.lastScriptOkAt = 0;
+        this.serverSessionId = '';
+        this.serverSessionActive = false;
+        this.panelSessionId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+        this.pollTimer = null;
         this.telemetryEnabled = true;
         this.csInterface = new CSInterface();
         this.init();
@@ -465,6 +469,16 @@
         this.startCommandPolling();
         this.startBridge();
         this.checkForPackageUpdate();
+        var self = this;
+        window.addEventListener('beforeunload', function() {
+            if (window.MCPPremiereLocalSRT && typeof window.MCPPremiereLocalSRT.shutdown === 'function') {
+                try { window.MCPPremiereLocalSRT.shutdown(); } catch (srtShutdownError) {}
+            }
+            self.isConnected = false;
+            self.writeHeartbeat();
+            if (self.pollTimer) clearInterval(self.pollTimer);
+            self.pollTimer = null;
+        });
     };
 
     MCPPremiereBridge.prototype.getTempDirectory = function() {
@@ -476,6 +490,47 @@
             this.log('Error creating temp directory: ' + e.message, 'error');
             return null;
         }
+    };
+
+    MCPPremiereBridge.prototype.readServerSession = function() {
+        try {
+            var tempPath = this.getTempDirectory();
+            if (!tempPath) return null;
+            var state = JSON.parse(fs.readFileSync(path.join(tempPath, 'server-session.json'), 'utf8'));
+            if (!state || typeof state.sessionId !== 'string' || !state.sessionId) return null;
+            return { sessionId: state.sessionId, active: state.active === true };
+        } catch (e) { return null; }
+    };
+
+    MCPPremiereBridge.prototype.syncServerSession = function() {
+        var state = this.readServerSession();
+        var nextId = state && state.active ? state.sessionId : '';
+        var nextActive = !!(state && state.active);
+        if (nextId === this.serverSessionId && nextActive === this.serverSessionActive) return;
+        var previousId = this.serverSessionId;
+        this.serverSessionId = nextId;
+        this.serverSessionActive = nextActive;
+        if (previousId && previousId !== nextId) {
+            // Queued ExtendScript has not reached Premiere and can be cancelled.
+            // An already dispatched native script cannot be interrupted safely.
+            var queued = this.evalScriptQueue || [];
+            this.evalScriptQueue = [];
+            for (var i = 0; i < queued.length; i++) {
+                try { queued[i].callback(new Error('MCP server session ended before this command was dispatched.')); } catch (e) {}
+            }
+            this.commandQueue = [];
+            this.isProcessing = !!this.evalScriptBusy;
+            this.updateCommandQueueUI();
+        }
+    };
+
+    MCPPremiereBridge.prototype.cancelQueuedScripts = function(message) {
+        var queued = this.evalScriptQueue || [];
+        this.evalScriptQueue = [];
+        for (var i = 0; i < queued.length; i++) {
+            try { queued[i].callback(new Error(message)); } catch (e) {}
+        }
+        this.isProcessing = !!this.evalScriptBusy;
     };
 
     MCPPremiereBridge.prototype.getDiagnosticReportPath = function() {
@@ -497,7 +552,14 @@
     };
 
     MCPPremiereBridge.prototype.watchDirectory = function(dirPath) {
+        // Keep the command file in place until its native callback publishes a
+        // response. Without this guard, the 250 ms poller re-reads that same file
+        // and queues the same Premiere script over and over while the first call
+        // is still running.
+        if (this.isProcessing) return;
         try {
+            this.syncServerSession();
+            if (!this.serverSessionActive) return;
             var watchedPath = ensureDirectory(dirPath);
             var files = fs.readdirSync(watchedPath);
             for (var i = 0; i < files.length; i++) {
@@ -523,17 +585,70 @@
 
     MCPPremiereBridge.prototype.processCommandFile = function(filePath) {
         var self = this;
+        var activePath = null;
+        var claimPath = null;
+        var claimHandle = null;
         try {
             var fileContent = fs.readFileSync(filePath, 'utf8');
             var command = JSON.parse(fileContent);
+            this.syncServerSession();
+            if (!this.serverSessionActive || command.sessionId !== this.serverSessionId || command.panelSessionId !== this.panelSessionId) {
+                // A command from an older server or CEP panel must never run in this panel.
+                // If it still belongs to this MCP server, publish a cancellation so its
+                // caller does not wait until timeout; old-server commands are just discarded.
+                if (this.serverSessionActive && command.sessionId === this.serverSessionId && command.id) {
+                    try {
+                        this.writeResponseAtomic(path.join(path.dirname(filePath), 'response-' + command.id + '.json'), {
+                            sessionId: command.sessionId,
+                            panelSessionId: command.panelSessionId || '',
+                            result: { success: false, status: 'session_invalidated', error: 'The MCP Bridge panel restarted before this command could run.' }
+                        });
+                    } catch (staleResponseError) {}
+                }
+                try { fs.unlinkSync(filePath); } catch (eStaleCommand) {}
+                if (command && command.id) {
+                    ['active-', 'claim-'].forEach(function(prefix) {
+                        try { fs.unlinkSync(path.join(path.dirname(filePath), prefix + command.id + '.json')); } catch (eStaleSidecar) {}
+                    });
+                }
+                return;
+            }
+            // Multiple CEP panel instances can poll the same shared temp folder.
+            // Claim each command atomically so only one instance can dispatch it.
+            claimPath = path.join(path.dirname(filePath), 'claim-' + command.id + '.json');
+            try {
+                claimHandle = fs.openSync(claimPath, 'wx');
+                fs.writeSync(claimHandle, JSON.stringify({ id: command.id, sessionId: command.sessionId, panelSessionId: this.panelSessionId, claimedAt: new Date().toISOString() }));
+                fs.closeSync(claimHandle);
+                claimHandle = null;
+            } catch (claimError) {
+                if (claimHandle !== null) { try { fs.closeSync(claimHandle); } catch (closeClaimError) {} }
+                claimHandle = null;
+                if (claimError && claimError.code === 'EEXIST') return;
+                throw claimError;
+            }
+            activePath = path.join(this.getTempDirectory(), 'active-' + command.id + '.json');
+            try {
+                fs.writeFileSync(activePath, JSON.stringify({ id: command.id, sessionId: command.sessionId, panelSessionId: this.panelSessionId, accepted: true, acceptedAt: new Date().toISOString() }));
+            } catch (markerError) {
+                this.log((command.script && command.script.indexOf('MCP_removeRange(') !== -1 ? '[remove_range] ' : '') + 'stage=acceptance_marker_write_failed id=' + command.id + ' error=' + markerError.message, 'error');
+            }
             this.log('Processing command: ' + command.id, 'info');
+            if (command.script && command.script.indexOf('MCP_removeRange(') !== -1) {
+                this.log('[remove_range] stage=cep_command_received id=' + command.id, 'info');
+            }
             this.addToQueue(command);
             this.isProcessing = true;
             this.executeCommand(command, function(result) {
                 var responseFile = filePath.replace('command-', 'response-');
                 var responsePublished = false;
                 try {
-                    self.writeResponseAtomic(responseFile, result);
+                    self.syncServerSession();
+                    if (self.serverSessionId === command.sessionId && self.serverSessionActive && self.panelSessionId === command.panelSessionId) {
+                        self.writeResponseAtomic(responseFile, { sessionId: command.sessionId, panelSessionId: self.panelSessionId, result: result });
+                    } else {
+                        try { fs.unlinkSync(responseFile); } catch (eOldResponse) {}
+                    }
                     responsePublished = true;
 
                     // Guarded on its own. The server removes the command file on its
@@ -543,14 +658,19 @@
                     try { fs.unlinkSync(filePath); } catch (eUnlink) {}
 
                     self.log('Command completed: ' + command.id, 'info');
+                    if (command.script && command.script.indexOf('MCP_removeRange(') !== -1) {
+                        self.log('[remove_range] stage=response_published id=' + command.id, 'info');
+                    }
                     self.updateCommandStatus(command.id, 'completed');
                 } catch (e) {
                     if (!responsePublished) {
                         try {
-                            self.writeResponseAtomic(responseFile, { error: e.message, timestamp: new Date().toISOString() });
+                            self.writeResponseAtomic(responseFile, { sessionId: command.sessionId, panelSessionId: self.panelSessionId, result: { success: false, error: e.message, timestamp: new Date().toISOString() } });
                         } catch (eWrite) {}
                     }
                 }
+                if (activePath) { try { fs.unlinkSync(activePath); } catch (eActiveUnlink) {} }
+                if (claimPath) { try { fs.unlinkSync(claimPath); } catch (eClaimUnlink) {} }
                 // isProcessing stays true until the native evalScript callback
                 // (see executeExtendScript). Clearing it here on a JS timeout lets
                 // the poller start a second evalScript while the first is still
@@ -559,10 +679,14 @@
             });
         } catch (e) {
             this.log('Error processing command file: ' + e.message, 'error');
+            if (claimHandle !== null) { try { fs.closeSync(claimHandle); } catch (eClaimClose) {} }
             try {
                 var responseFile = filePath.replace('command-', 'response-');
-                this.writeResponseAtomic(responseFile, { error: e.message, timestamp: new Date().toISOString() });
+                var failedCommand = command || {};
+                this.writeResponseAtomic(responseFile, { sessionId: failedCommand.sessionId || '', panelSessionId: this.panelSessionId, result: { success: false, error: e.message, timestamp: new Date().toISOString() } });
                 try { fs.unlinkSync(filePath); } catch (eUnlink) {}
+                if (activePath) { try { fs.unlinkSync(activePath); } catch (eActiveUnlink) {} }
+                if (claimPath) { try { fs.unlinkSync(claimPath); } catch (eClaimUnlink) {} }
             } catch (e2) {}
             this.isProcessing = false;
         }
@@ -570,16 +694,47 @@
 
     MCPPremiereBridge.prototype.executeCommand = function(command, done) {
         this.updateCommandStatus(command.id, 'executing');
+        var isRemoveRange = command.script.indexOf('MCP_removeRange(') !== -1;
         if (!this.validateScript(command.script)) {
+            if (isRemoveRange) this.log('[remove_range] stage=script_validation failed id=' + command.id, 'error');
             done({ success: false, error: 'Script validation failed' });
             this.isProcessing = false;
             return;
         }
+        if (isRemoveRange) this.log('[remove_range] stage=premiere_dispatch id=' + command.id, 'info');
+        // The MCP command uses the existing command/response file bridge, but SRT
+        // generation is a CEP-side workflow (Python process, progress UI, and import).
+        // Route this one marker to the same function used by the panel button instead
+        // of sending it to Premiere's synchronous ExtendScript evaluator.
+        if (command.script.indexOf('__MCP_LOCAL_SRT_GENERATE__') !== -1) {
+            var generator = window.MCPPremiereLocalSRT;
+            if (!generator || typeof generator.generate !== 'function') {
+                done({
+                    success: false,
+                    error: 'Local SRT generator is unavailable. Open or reload the Local SRT panel in MCP Bridge (CEP).'
+                });
+                this.isProcessing = false;
+                return;
+            }
+            try {
+                var self = this;
+                generator.generate(function(result) {
+                    done({ success: true, result: result, timestamp: new Date().toISOString() });
+                    self.isProcessing = false;
+                });
+            } catch (e) {
+                done({ success: false, error: 'Local SRT generation could not start: ' + e.message });
+                this.isProcessing = false;
+            }
+            return;
+        }
         this.executeExtendScript(command.script, function(err, result) {
             if (err) {
+                if (isRemoveRange) this.log('[remove_range] stage=evalscript_failure id=' + command.id + ' error=' + err.message, 'error');
                 done({ success: false, error: err.message });
                 return;
             }
+            if (isRemoveRange) this.log('[remove_range] stage=premiere_result id=' + command.id + ' result=' + String(result).substring(0, 1200), 'info');
             done({ success: true, result: result, timestamp: new Date().toISOString() });
         }, command.timeoutMs);
     };
@@ -718,11 +873,14 @@
 
     MCPPremiereBridge.prototype.writeHeartbeat = function() {
         try {
+            this.syncServerSession();
             var tempPath = this.getTempDirectory();
             if (!tempPath) return;
             fs.writeFileSync(path.join(tempPath, 'bridge-heartbeat.json'), JSON.stringify({
                 t: Date.now(),
-                started: !!this.isConnected,
+                started: !!this.isConnected && !!this.serverSessionActive,
+                sessionId: this.serverSessionId,
+                panelSessionId: this.panelSessionId,
                 scriptOkAt: this.lastScriptOkAt || null
             }));
         } catch (e) {}
@@ -741,10 +899,13 @@
     };
 
     MCPPremiereBridge.prototype.startCommandPolling = function() {
+        if (this.pollTimer) return;
         var self = this;
         this.lastPingAt = 0;
-        setInterval(function() {
+        this.pollTimer = setInterval(function() {
+            self.syncServerSession();
             self.writeHeartbeat();
+            if (!self.serverSessionActive) return;
             var now = Date.now();
             if (!self.isProcessing && !self.evalScriptBusy && self.isConnected && now - self.lastPingAt >= 2000) {
                 self.lastPingAt = now;
@@ -877,7 +1038,7 @@
             return;
         }
         this.log('Starting MCP Bridge...', 'info');
-        this.isProcessing = false;
+        this.isProcessing = !!this.evalScriptBusy;
         this.isConnected = true;
         this.updateUI();
         var tempPath = this.getTempDirectory();
@@ -895,7 +1056,8 @@
     MCPPremiereBridge.prototype.stopBridge = function() {
         this.log('Stopping MCP Bridge...', 'info');
         this.isConnected = false;
-        this.isProcessing = false;
+        this.cancelQueuedScripts('MCP Bridge panel stopped before this command was dispatched.');
+        this.writeHeartbeat();
         this.updateUI();
         this.updateServerStatus(false);
     };
@@ -1055,6 +1217,20 @@
 
     MCPPremiereBridge.prototype.log = function(message, level) {
         level = level || 'info';
+        if (String(message).indexOf('[remove_range]') !== -1) {
+            try {
+                var logPath = path.join(this.getTempDirectory(), 'remove-range-diagnostics.log');
+                fs.appendFileSync(logPath, new Date().toISOString() + ' [' + level + '] ' + String(message) + '\n');
+            } catch (logError) {}
+            try {
+                if (String(message).indexOf('stage=cep_command_received') !== -1) {
+                    var activeMatch = /id=([A-Za-z0-9-]+)/.exec(String(message));
+                    if (activeMatch) {
+                        fs.writeFileSync(path.join(this.getTempDirectory(), 'active-' + activeMatch[1] + '.json'), JSON.stringify({ id: activeMatch[1], accepted: true, acceptedAt: new Date().toISOString() }));
+                    }
+                }
+            } catch (markerError) {}
+        }
         var logContainer = document.getElementById('logContainer');
         if (logContainer) {
             var el = document.createElement('div');

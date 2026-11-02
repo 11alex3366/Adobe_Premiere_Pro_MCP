@@ -6,7 +6,7 @@
  */
 
 import { Logger } from '../utils/logger.js';
-import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'fs';
@@ -17,6 +17,7 @@ import type { EnsureHostOptions, EnsureHostResult, PremiereProTransport } from '
 const execFileAsync = promisify(execFile);
 
 export const BRIDGE_HEARTBEAT_FILE = 'bridge-heartbeat.json';
+export const BRIDGE_SESSION_FILE = 'server-session.json';
 export const BRIDGE_PANEL_ABSENT_MS = 1500;
 export const BRIDGE_HEARTBEAT_STALE_MS = 2500;
 export const HEALTH_CHECK_TIMEOUT_MS = 8000;
@@ -857,9 +858,9 @@ export class PremiereProBridge implements PremiereProTransport {
   private communicationMethod: 'uxp' | 'extendscript' | 'file';
   private tempDir: string;
   private readonly usesExternalTempDir: boolean;
-  private uxpProcess?: ChildProcess;
   private isInitialized = false;
   private sessionId: string;
+  private pendingRequests = new Map<string, AbortController>();
   private premiereInstallPath: string | null = null;
   private premiereLaunchPath: string | null = null;
 
@@ -874,6 +875,7 @@ export class PremiereProBridge implements PremiereProTransport {
   }
 
   async initialize(): Promise<void> {
+    if (this.isInitialized) return;
     try {
       await this.setupTempDirectory();
       await this.detectPremiereProInstallation();
@@ -894,6 +896,45 @@ export class PremiereProBridge implements PremiereProTransport {
       this.logger.error('Failed to create temp directory:', error);
       throw error;
     }
+
+    // Publish the new owner before removing old queue files. CEP only executes
+    // commands carrying this session ID, so a command left by a crashed server
+    // cannot run during or after this reset.
+    await this.writeSessionState(true);
+    await this.clearProtocolFiles();
+  }
+
+  private async writeSessionState(active: boolean): Promise<void> {
+    const sessionPath = join(this.tempDir, BRIDGE_SESSION_FILE);
+    const stagingPath = join(this.tempDir, `.server-session-${this.sessionId}.tmp`);
+    await fs.writeFile(stagingPath, JSON.stringify({
+      sessionId: this.sessionId,
+      active,
+      updatedAt: new Date().toISOString(),
+    }));
+    await fs.rename(stagingPath, sessionPath);
+  }
+
+  private async readSessionState(): Promise<{ sessionId?: string; active?: boolean } | null> {
+    try {
+      return JSON.parse(await fs.readFile(join(this.tempDir, BRIDGE_SESSION_FILE), 'utf8')) as { sessionId?: string; active?: boolean };
+    } catch {
+      return null;
+    }
+  }
+
+  private async clearProtocolFiles(): Promise<void> {
+    let entries: string[];
+    try {
+      const listing = await fs.readdir(this.tempDir);
+      entries = Array.isArray(listing) ? listing : [];
+    } catch {
+      return;
+    }
+    const bridgeFile = /^(?:command|response|active|claim)-[A-Za-z0-9-]+\.json(?:\.part)?$|^\.tmp-[A-Za-z0-9-]+\.json$|^\.server-session-[A-Za-z0-9-]+\.tmp$/;
+    await Promise.all(entries.filter((entry) => bridgeFile.test(entry)).map((entry) =>
+      fs.unlink(join(this.tempDir, entry)).catch(() => undefined),
+    ));
   }
 
   private async detectPremiereProInstallation(): Promise<void> {
@@ -1164,9 +1205,13 @@ export class PremiereProBridge implements PremiereProTransport {
     const commandId = randomUUID();
     const commandFile = join(this.tempDir, `command-${commandId}.json`);
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
+    const activeFile = join(this.tempDir, `active-${commandId}.json`);
+    const claimFile = join(this.tempDir, `claim-${commandId}.json`);
     // Declared out here so the finally below can remove it: if rename() fails the
     // scratch file is still on disk, and nothing else ever matches that name.
     const commandStaging = join(this.tempDir, `.tmp-${commandId}.json`);
+    const abortController = new AbortController();
+    this.pendingRequests.set(commandId, abortController);
 
     try {
       const fullScript = this.buildExecutableScript(script, callerAuthored);
@@ -1185,8 +1230,12 @@ export class PremiereProBridge implements PremiereProTransport {
       //
       // The scratch name must not itself look like a command to the panel, which matches on
       // a "command-" prefix; a leading dot keeps it out of that test.
+      const panelSession = await this.readHeartbeat();
+      const panelSessionId = panelSession?.panelSessionId || '';
       await fs.writeFile(commandStaging, JSON.stringify({
         id: commandId,
+        sessionId: this.sessionId,
+        panelSessionId,
         script: fullScript,
         timeoutMs: timeoutMs,
         timestamp: new Date().toISOString()
@@ -1196,7 +1245,7 @@ export class PremiereProBridge implements PremiereProTransport {
       // Wait for response (in a real implementation, this would be handled by the UXP plugin).
       // Batch operations pass a larger timeout because a single round-trip does the work of
       // dozens of individual calls inside one ExtendScript pass.
-      return await this.waitForResponse(responseFile, timeoutMs);
+      return await this.waitForResponse(responseFile, timeoutMs, activeFile, abortController.signal, panelSessionId);
     } catch (error) {
       this.logger.error(`Failed to execute script: ${error}`);
       throw error;
@@ -1209,27 +1258,30 @@ export class PremiereProBridge implements PremiereProTransport {
       // written after this has already run, so it stays until the directory is cleaned. The
       // command file is the one that matters here, because a stale command still executes.
       await fs.unlink(commandStaging).catch(() => {});
+      this.pendingRequests.delete(commandId);
       await fs.unlink(commandFile).catch(() => {});
       await fs.unlink(responseFile).catch(() => {});
+      await fs.unlink(activeFile).catch(() => {});
+      await fs.unlink(claimFile).catch(() => {});
     }
   }
 
-  private async readHeartbeat(): Promise<{ t: number; started: boolean; scriptOkAt: number | null } | null> {
+  private async readHeartbeat(): Promise<{ t: number; started: boolean; scriptOkAt: number | null; sessionId: string; panelSessionId: string } | null> {
     try {
       const raw = await fs.readFile(join(this.tempDir, BRIDGE_HEARTBEAT_FILE), 'utf8');
-      const parsed = JSON.parse(raw) as { t?: unknown; started?: unknown; scriptOkAt?: unknown };
-      if (typeof parsed?.t !== 'number' || !Number.isFinite(parsed.t)) return null;
+      const parsed = JSON.parse(raw) as { t?: unknown; started?: unknown; scriptOkAt?: unknown; sessionId?: unknown; panelSessionId?: unknown };
+      if (typeof parsed?.t !== 'number' || !Number.isFinite(parsed.t) || parsed.sessionId !== this.sessionId || typeof parsed.panelSessionId !== 'string' || !parsed.panelSessionId) return null;
       if (Date.now() - parsed.t > BRIDGE_HEARTBEAT_STALE_MS) return null;
       const scriptOkAt = typeof parsed.scriptOkAt === 'number' && Number.isFinite(parsed.scriptOkAt) && parsed.scriptOkAt > 0
         ? parsed.scriptOkAt
         : null;
-      return { t: parsed.t, started: parsed.started === true, scriptOkAt };
+      return { t: parsed.t, started: parsed.started === true, scriptOkAt, sessionId: this.sessionId, panelSessionId: parsed.panelSessionId };
     } catch {
       return null;
     }
   }
 
-  private async waitForResponse(responseFile: string, timeout = 60000): Promise<any> {
+  private async waitForResponse(responseFile: string, timeout = 60000, activeFile?: string, signal?: AbortSignal, panelSessionId = ''): Promise<any> {
     const startTime = Date.now();
     // A response that exists but will not parse is a different failure from one that has
     // not arrived, and reporting it as the latter sends the reader to check whether
@@ -1241,6 +1293,7 @@ export class PremiereProBridge implements PremiereProTransport {
     let parseAttempts = 0;
 
     while (Date.now() - startTime < timeout) {
+      if (signal?.aborted) throw new Error('MCP bridge session ended; pending request was cancelled.');
       let raw: string | undefined;
       try {
         raw = await fs.readFile(responseFile, 'utf8');
@@ -1249,14 +1302,23 @@ export class PremiereProBridge implements PremiereProTransport {
       }
 
       if (raw !== undefined) {
+        let parsed: { sessionId?: unknown; panelSessionId?: unknown; result?: unknown } | null = null;
         try {
-          const parsed = JSON.parse(raw);
-          if (parsed.result !== undefined) return parsed.result;
-          return parsed;
+          parsed = JSON.parse(raw) as { sessionId?: unknown; panelSessionId?: unknown; result?: unknown };
         } catch (error) {
           lastParseError = error instanceof Error ? error : new Error(String(error));
           lastRawResponse = raw;
           parseAttempts++;
+        }
+        if (parsed) {
+          if (parsed.sessionId !== undefined && parsed.sessionId !== this.sessionId) {
+            throw new Error('Bridge response belongs to a different MCP session and was ignored.');
+          }
+          if (panelSessionId && parsed.panelSessionId !== panelSessionId) {
+            throw new Error('Bridge response belongs to a different CEP panel session and was ignored.');
+          }
+          if (parsed.result !== undefined) return parsed.result;
+          return parsed;
         }
       }
 
@@ -1267,10 +1329,24 @@ export class PremiereProBridge implements PremiereProTransport {
       // we should wait out the real timeout (evalScript can be slow).
       if (Date.now() - startTime >= BRIDGE_PANEL_ABSENT_MS) {
         const beat = await this.readHeartbeat();
-        if (!beat) {
+        if (beat && panelSessionId && beat.panelSessionId !== panelSessionId) {
+          throw new Error('Premiere CEP panel restarted during this request; pending request was cancelled.');
+        }
+        let commandAccepted = false;
+        if (activeFile) {
+          try {
+            const active = JSON.parse(await fs.readFile(activeFile, 'utf8')) as { accepted?: unknown; sessionId?: unknown; panelSessionId?: unknown };
+            commandAccepted = active.accepted === true && active.sessionId === this.sessionId && active.panelSessionId === panelSessionId;
+          } catch {}
+        }
+        // CEP may stop refreshing its heartbeat while Premiere's synchronous
+        // scripting call is in flight. Its acceptance marker proves the panel
+        // received this exact command, so wait for that command's response or
+        // its requested timeout instead of misreporting an offline panel.
+        if (!beat && !commandAccepted) {
           throw new Error(BRIDGE_PANEL_NOT_RUNNING);
         }
-        if (!beat.started) {
+        if (beat && !beat.started && !commandAccepted) {
           throw new Error(BRIDGE_NOT_STARTED);
         }
       }
@@ -2256,8 +2332,19 @@ export class PremiereProBridge implements PremiereProTransport {
   }
 
   async cleanup(): Promise<void> {
-    if (this.uxpProcess) {
-      this.uxpProcess.kill();
+    for (const request of this.pendingRequests.values()) request.abort();
+    this.pendingRequests.clear();
+
+    // A server that was superseded by a newer session must not invalidate the
+    // new owner's queue while shutting down.
+    try {
+      const currentSession = await this.readSessionState();
+      if (currentSession?.sessionId === this.sessionId) {
+        await this.writeSessionState(false);
+        await this.clearProtocolFiles();
+      }
+    } catch (error) {
+      this.logger.warn('Failed to invalidate bridge session:', error);
     }
     
     // Only remove temp dirs created by this server. The shared bridge directory is
@@ -2271,5 +2358,6 @@ export class PremiereProBridge implements PremiereProTransport {
     }
     
     this.logger.info('Adobe Premiere Pro bridge cleaned up');
+    this.isInitialized = false;
   }
 } 

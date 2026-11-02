@@ -14,6 +14,8 @@ import { graphicsTools } from './graphics.js';
 import { markersTools } from './markers.js';
 import { mediaTools } from './media.js';
 import { projectTools } from './project.js';
+import { rangeTools } from './range.js';
+import { srtTools } from './srt.js';
 import { sequenceTools } from './sequence.js';
 import { timelineTools } from './timeline.js';
 import { tracksTools } from './tracks.js';
@@ -28,6 +30,8 @@ export const domainTools: ToolModule[] = [
   ...markersTools,
   ...mediaTools,
   ...projectTools,
+  ...rangeTools,
+  ...srtTools,
   ...sequenceTools,
   ...timelineTools,
   ...tracksTools,
