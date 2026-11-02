@@ -1,3 +1,8 @@
+npm.cmd run build
+npm.cmd run install-cep
+
+
+
 لو عندك Adobe Premiere Pro 2023 (الإصدار 23.x)، هتحتاج Node.js 20 أو أحدث، وPython لو هتستخدم توليد SRT المحلي؛ ولو ما عندكش Premiere، ابدأ بتثبيت Creative Cloud وPremiere من Adobe، وبعدها امشِ على الخطوات واحدة واحدة.
 
 ============================================================
