@@ -69,6 +69,7 @@ export function findNulByteArgument(value: any, path = ''): string | null {
 export class PremiereProTools {
   private logger: Logger;
   private context: ToolContext;
+  private retakeAnalyzer: NonNullable<ToolContext['analyzeRetakes']> | undefined;
 
   constructor(bridge: PremiereProTransport) {
     this.logger = new Logger('PremiereProTools');
@@ -77,7 +78,15 @@ export class PremiereProTools {
       logger: this.logger,
       listTools: () => this.getAvailableTools(),
       listAdvertisedTools: () => this.getAdvertisedTools(),
+      analyzeRetakes: async (groups, signal) => {
+        if (!this.retakeAnalyzer) throw new Error('No saved local assistant model is available for retake selection. Add a provider in MCP Bridge Settings; no timeline edits were made.');
+        return this.retakeAnalyzer(groups, signal);
+      },
     };
+  }
+
+  setRetakeAnalyzer(analyzer: NonNullable<ToolContext['analyzeRetakes']> | undefined): void {
+    this.retakeAnalyzer = analyzer;
   }
 
   private getLocalTools(): MCPTool[] {
@@ -103,7 +112,7 @@ export class PremiereProTools {
     });
   }
 
-  async executeTool(name: string, args: Record<string, any>): Promise<any> {
+  async executeTool(name: string, args: Record<string, any>, signal?: AbortSignal): Promise<any> {
     // Premiere truncates a string at the first NUL when it is assigned — a
     // marker named "p\0q" is created as "p" — and reports success for the
     // truncated result. JSON.stringify escapes the NUL on the way into the
@@ -143,6 +152,13 @@ export class PremiereProTools {
       args = {
         start_time: args.start_time ?? args.startTime,
         end_time: args.end_time ?? args.endTime,
+      };
+    }
+    if (name === 'remove_retakes') {
+      args = {
+        start_time: args.start_time ?? args.startTime,
+        end_time: args.end_time ?? args.endTime,
+        timeout_seconds: args.timeout_seconds ?? args.timeoutSeconds,
       };
     }
 
@@ -203,7 +219,7 @@ export class PremiereProTools {
     try {
       const handler = TOOL_HANDLERS.get(name);
       if (handler) {
-        const result = await handler.run(this.context, args);
+        const result = await handler.run({ ...this.context, signal }, args);
         if (name === 'remove_range') {
           this.logger.info(`[remove_range] stage=handler_complete result=${JSON.stringify(result)}`);
         }

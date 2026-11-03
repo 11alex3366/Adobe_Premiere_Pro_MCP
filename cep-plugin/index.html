@@ -550,6 +550,24 @@
             text-transform: uppercase;
             padding: 4px 0 2px;
         }
+        .chat-log { height: 170px; overflow-y: auto; padding: 8px; margin: 10px 0; border: 1px solid var(--panel-border); border-radius: 6px; background: rgba(0,0,0,.18); }
+        .chat-message { white-space: pre-wrap; overflow-wrap: anywhere; padding: 6px 8px; margin: 5px 0; border-radius: 5px; font-size: 12px; }
+        .chat-message.user { background: rgba(66, 142, 201, .22); }
+        .chat-message.assistant { background: rgba(255,255,255,.06); }
+        .chat-message.error { color: #ffb3aa; background: rgba(205, 75, 56, .13); }
+        .chat-profiles { display: grid; gap: 5px; margin: 8px 0; }
+        .chat-profile { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 7px; border:1px solid var(--panel-border); border-radius:5px; font-size:11px; }
+        .chat-profile.active { border-color: #4cbf8b; }
+        .chat-profile button { padding:3px 7px; }
+        .chat-compose { display:grid; grid-template-columns:1fr auto auto; gap:6px; align-items:end; }
+        .chat-compose textarea { min-height:52px; resize:vertical; }
+        .chat-header-actions { display:flex; align-items:center; gap:8px; }
+        .chat-settings-dialog { width:min(560px, calc(100% - 28px)); max-height:88vh; overflow:auto; color:var(--text-0); background:#14202a; border:1px solid var(--panel-border); border-radius:10px; padding:16px; box-shadow:var(--panel-shadow); }
+        .chat-settings-dialog::backdrop { background:rgba(0,0,0,.72); }
+        .chat-settings-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; }
+        .chat-settings-head h3 { margin:0; font-size:16px; }
+        .chat-settings-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+        .chat-model-row { display:grid; grid-template-columns:1fr; gap:6px; }
     </style>
 </head>
 <body>
@@ -622,6 +640,45 @@
             </div>
         </section>
 
+        <section class="panel" id="assistantChatPanel">
+            <div class="panel-title">
+                <h2>AI Chat · MCP Tools</h2>
+                <div class="chat-header-actions"><span id="chatRotationStatus">Connecting…</span><button class="secondary" id="chatSettingsOpen" type="button">⚙ Settings</button></div>
+            </div>
+            <div class="micro-copy">Saved API connections rotate every 10 minutes. Prompts and tool results go to the active model provider.</div>
+            <div id="chatLog" class="chat-log" aria-live="polite"><div class="chat-message assistant">Ready when a model profile is configured.</div></div>
+            <form id="chatForm" class="chat-compose">
+                <textarea id="chatInput" placeholder="Ask Premiere to edit your active sequence…" aria-label="Message"></textarea>
+                <button class="primary" id="chatSend" type="submit">Send</button>
+                <button class="secondary" id="chatStop" type="button" disabled>Stop</button>
+            </form>
+            <div class="micro-copy" id="chatStatus" role="status">MCP tools run through the existing Premiere bridge. Local models must support function / tool calling.</div>
+            <dialog class="chat-settings-dialog" id="chatSettingsDialog">
+                <div class="chat-settings-head"><h3>Model & API Settings</h3><button class="secondary" id="chatSettingsClose" type="button">Close</button></div>
+                <div class="micro-copy">Add a provider connection and choose a model. Keys are saved locally; Windows protects them with DPAPI.</div>
+                <div id="chatProfiles" class="chat-profiles"></div>
+                <form id="chatApiForm">
+                    <h3 id="chatApiFormTitle">Add API connection</h3>
+                    <label for="chatProfileName">Connection name</label><input id="chatProfileName" type="text" placeholder="Gemini, Work OpenAI, Local Llama…" required>
+                    <label for="chatProvider">Provider</label>
+                    <select id="chatProvider">
+                        <option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option>
+                        <option value="openai-compatible">OpenAI-compatible API</option><option value="ollama">Ollama / local model</option>
+                    </select>
+                    <label for="chatBaseUrl">API Base URL</label>
+                    <input id="chatBaseUrl" type="url" placeholder="Leave blank for OpenAI, Anthropic, or Google">
+                    <div class="micro-copy" id="chatApiHelp">OpenAI: leave Base URL blank. Paste the secret key from your OpenAI API account.</div>
+                    <label for="chatApiKey">API key</label><input id="chatApiKey" type="password" autocomplete="new-password" placeholder="Paste the key from your provider">
+                    <div class="chat-settings-actions"><button class="secondary" id="chatFetchModels" type="button">Fetch Models</button></div>
+                    <div class="micro-copy srt-status" id="chatApiSettingsStatus" role="status" aria-live="polite">Enter your provider details, then click Fetch Models.</div>
+                    <label for="chatModelSelect">Choose model</label>
+                    <div class="chat-model-row"><select id="chatModelSelect"><option value="">Fetch models to choose</option></select></div>
+                    <label for="chatModelManual">Or enter model ID manually</label><input id="chatModelManual" type="text" placeholder="Use if the provider cannot list models">
+                    <div class="chat-settings-actions"><button class="primary" id="chatSaveApi" type="submit">Save API</button><button class="secondary" id="chatNewApi" type="button">Add Another API</button></div>
+                </form>
+            </dialog>
+        </section>
+
         <section class="panel">
             <div class="panel-title">
                 <h2>Local SRT Captions</h2>
@@ -656,6 +713,31 @@
             <input type="number" id="removeRangeOut" min="0" step="0.001" value="7">
             <div class="button-row"><button class="primary" id="removeRangeButton" type="button">Cut Range</button></div>
             <div class="micro-copy srt-status" id="removeRangeStatus" role="status" aria-live="polite">Runs the same Premiere-side remove_range function used by MCP.</div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">
+                <h2>Remove Retakes</h2>
+                <span>Active sequence · seconds</span>
+            </div>
+            <label for="removeRetakesIn">Start Time (In)</label>
+            <input type="number" id="removeRetakesIn" min="0" step="0.001" value="0">
+            <label for="removeRetakesOut">End Time (Out)</label>
+            <input type="number" id="removeRetakesOut" min="0" step="0.001" value="30">
+            <label for="removeRetakesTimeout">Cut wait timeout</label>
+            <select id="removeRetakesTimeout">
+                <option value="45" selected>45 seconds</option>
+                <option value="60">60 seconds</option>
+                <option value="90">90 seconds</option>
+            </select>
+            <label for="removeRetakesProfile">Retake analysis API / model</label>
+            <div class="chat-model-row">
+                <select id="removeRetakesProfile"><option value="">Add an API connection first</option></select>
+                <button class="secondary" id="removeRetakesManageApi" type="button">Add / Manage API</button>
+            </div>
+            <div class="micro-copy">This saved provider and model are used only to analyze retakes. Add its key and choose a model with Add / Manage API.</div>
+            <div class="button-row"><button class="primary" id="removeRetakesButton" type="button">Remove Retakes</button><button class="secondary" id="removeRetakesStop" type="button" disabled>Stop</button></div>
+            <div class="micro-copy srt-status" id="removeRetakesStatus" role="status" aria-live="polite">Generates a local word-level SRT and removes only confident repeated takes.</div>
         </section>
 
         <section class="panel">
@@ -726,5 +808,7 @@
     <script src="bridge-cep.js"></script>
     <script src="local-srt.js"></script>
     <script src="remove-range-test.js"></script>
+    <script src="remove-retakes-test.js"></script>
+    <script src="assistant-chat.js"></script>
 </body>
 </html>

@@ -11,6 +11,7 @@ import { Logger } from './utils/logger.js';
 import { PACKAGE_VERSION } from './version.js';
 import { checkForUpdate } from './utils/update-check.js';
 import { MCP_SERVER_INSTRUCTIONS } from './instructions.js';
+import { PremiereAssistantChat } from './assistant-chat.js';
 import {
   getTelemetry,
   summarizeToolFailure,
@@ -28,6 +29,7 @@ class MCPPremiereProServer {
   private bridge: PremiereProBridge;
   private logger: Logger;
   private telemetry: Telemetry;
+  private assistantChat: PremiereAssistantChat | undefined;
 
   constructor() {
     this.logger = new Logger('MCPPremiereProServer');
@@ -91,15 +93,18 @@ class MCPPremiereProServer {
       try {
         const result = await this.tools.executeTool(name, args || {});
         this.recordToolCall(innerName || name, result, Date.now() - startedAt);
+        const primitiveRangeResult = name === 'remove_range' && typeof result === 'number';
+        const rangeBatchResult = name === 'remove_ranges' && Array.isArray(result);
+        const compactRangeResult = primitiveRangeResult || rangeBatchResult;
         const toolResult: CallToolResult = {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify(result, null, 2)
+              text: primitiveRangeResult ? String(result) : JSON.stringify(result, null, 2)
             }
           ],
-          structuredContent: result as Record<string, unknown>,
-          isError: result.success === false
+          ...(compactRangeResult ? {} : { structuredContent: result as Record<string, unknown> }),
+          isError: compactRangeResult ? false : result.success === false
         };
         return server.projectCallToolResult(toolResult, undefined);
       } catch (error) {
@@ -212,6 +217,16 @@ class MCPPremiereProServer {
     try {
       await this.bridge.initialize();
       this.logger.info('Adobe Premiere Pro bridge initialized');
+
+      const runtimeInfo = this.bridge.getRuntimeInfo();
+      this.assistantChat = new PremiereAssistantChat(this.tools, runtimeInfo.tempDir, runtimeInfo.sessionId, this.logger);
+      try {
+        await this.assistantChat.start();
+        this.tools.setRetakeAnalyzer((groups, signal) => this.assistantChat!.analyzeRetakes(groups, signal));
+      } catch (error) {
+        this.logger.error(`Local assistant chat failed to start: ${error instanceof Error ? error.message : String(error)}`);
+        this.assistantChat = undefined;
+      }
       
       this.stdioHandle = serveStdio(() => this.buildServer(), {
         onerror: (error) => {
@@ -235,6 +250,7 @@ class MCPPremiereProServer {
   async stop(): Promise<void> {
     try {
       await this.stdioHandle?.close();
+      await this.assistantChat?.stop();
       await this.bridge.cleanup();
       this.logger.info('MCP Adobe Premiere Pro Server stopped');
     } catch (error) {

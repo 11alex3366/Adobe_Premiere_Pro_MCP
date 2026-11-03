@@ -27,6 +27,8 @@ export const CORE_ADVERTISED_TOOL_NAMES = [
   'list_sequences',
   'generate_srt',
   'remove_range',
+  'remove_ranges',
+  'remove_retakes',
 ] as const;
 
 export type ToolsetMode = 'search' | 'full';

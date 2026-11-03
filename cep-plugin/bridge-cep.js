@@ -728,6 +728,29 @@
             }
             return;
         }
+        var retakesMarker = '__MCP_LOCAL_SRT_RETAKES__';
+        var retakesMarkerIndex = command.script.indexOf(retakesMarker);
+        if (retakesMarkerIndex !== -1) {
+            var retakesGenerator = window.MCPPremiereLocalSRT;
+            if (!retakesGenerator || typeof retakesGenerator.generateRange !== 'function') {
+                done({ success: false, error: 'The bounded local SRT generator is unavailable. Reload MCP Bridge (CEP).' });
+                this.isProcessing = false;
+                return;
+            }
+            try {
+                var rangePayload = command.script.slice(retakesMarkerIndex + retakesMarker.length).split('"')[0];
+                var requestedRange = JSON.parse(decodeURIComponent(rangePayload));
+                var rangeBridge = this;
+                retakesGenerator.generateRange(requestedRange.start_time, requestedRange.end_time, function(result) {
+                    done({ success: true, result: result, timestamp: new Date().toISOString() });
+                    rangeBridge.isProcessing = false;
+                });
+            } catch (rangeError) {
+                done({ success: false, error: 'Bounded SRT generation could not start: ' + rangeError.message });
+                this.isProcessing = false;
+            }
+            return;
+        }
         this.executeExtendScript(command.script, function(err, result) {
             if (err) {
                 if (isRemoveRange) this.log('[remove_range] stage=evalscript_failure id=' + command.id + ' error=' + err.message, 'error');
@@ -1222,14 +1245,6 @@
                 var logPath = path.join(this.getTempDirectory(), 'remove-range-diagnostics.log');
                 fs.appendFileSync(logPath, new Date().toISOString() + ' [' + level + '] ' + String(message) + '\n');
             } catch (logError) {}
-            try {
-                if (String(message).indexOf('stage=cep_command_received') !== -1) {
-                    var activeMatch = /id=([A-Za-z0-9-]+)/.exec(String(message));
-                    if (activeMatch) {
-                        fs.writeFileSync(path.join(this.getTempDirectory(), 'active-' + activeMatch[1] + '.json'), JSON.stringify({ id: activeMatch[1], accepted: true, acceptedAt: new Date().toISOString() }));
-                    }
-                }
-            } catch (markerError) {}
         }
         var logContainer = document.getElementById('logContainer');
         if (logContainer) {

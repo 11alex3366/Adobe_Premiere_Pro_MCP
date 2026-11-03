@@ -15,6 +15,7 @@ import { markersTools } from './markers.js';
 import { mediaTools } from './media.js';
 import { projectTools } from './project.js';
 import { rangeTools } from './range.js';
+import { retakeTools } from './retakes.js';
 import { srtTools } from './srt.js';
 import { sequenceTools } from './sequence.js';
 import { timelineTools } from './timeline.js';
@@ -31,6 +32,7 @@ export const domainTools: ToolModule[] = [
   ...mediaTools,
   ...projectTools,
   ...rangeTools,
+  ...retakeTools,
   ...srtTools,
   ...sequenceTools,
   ...timelineTools,

@@ -874,6 +874,10 @@ export class PremiereProBridge implements PremiereProTransport {
     this.tempDir = envDir ? envDir.replace(/\/$/, '') : createSecureTempDir(this.sessionId);
   }
 
+  getRuntimeInfo(): { tempDir: string; sessionId: string } {
+    return { tempDir: this.tempDir, sessionId: this.sessionId };
+  }
+
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
     try {
@@ -931,7 +935,7 @@ export class PremiereProBridge implements PremiereProTransport {
     } catch {
       return;
     }
-    const bridgeFile = /^(?:command|response|active|claim)-[A-Za-z0-9-]+\.json(?:\.part)?$|^\.tmp-[A-Za-z0-9-]+\.json$|^\.server-session-[A-Za-z0-9-]+\.tmp$/;
+    const bridgeFile = /^(?:command|response|active|claim|native-result)-[A-Za-z0-9-]+\.json(?:\.part)?$|^\.tmp-[A-Za-z0-9-]+\.json$|^\.server-session-[A-Za-z0-9-]+\.tmp$/;
     await Promise.all(entries.filter((entry) => bridgeFile.test(entry)).map((entry) =>
       fs.unlink(join(this.tempDir, entry)).catch(() => undefined),
     ));
@@ -1197,7 +1201,7 @@ export class PremiereProBridge implements PremiereProTransport {
     return EXTENDSCRIPT_HELPERS + '(function(){\n' + safeScript + '\n})();';
   }
 
-  async executeScript(script: string, timeoutMs?: number, callerAuthored = false): Promise<any> {
+  async executeScript(script: string, timeoutMs?: number, callerAuthored = false, responseGraceMs = 0, options: { nativeResultReceipt?: boolean; signal?: AbortSignal | undefined } = {}): Promise<any> {
     if (!this.isInitialized) {
       throw new Error('Bridge not initialized. Call initialize() first.');
     }
@@ -1207,14 +1211,23 @@ export class PremiereProBridge implements PremiereProTransport {
     const responseFile = join(this.tempDir, `response-${commandId}.json`);
     const activeFile = join(this.tempDir, `active-${commandId}.json`);
     const claimFile = join(this.tempDir, `claim-${commandId}.json`);
+    const nativeResultFile = options.nativeResultReceipt ? join(this.tempDir, `native-result-${commandId}.json`) : undefined;
     // Declared out here so the finally below can remove it: if rename() fails the
     // scratch file is still on disk, and nothing else ever matches that name.
     const commandStaging = join(this.tempDir, `.tmp-${commandId}.json`);
     const abortController = new AbortController();
+    const abortFromCaller = () => abortController.abort();
+    options.signal?.addEventListener('abort', abortFromCaller, { once: true });
     this.pendingRequests.set(commandId, abortController);
 
     try {
-      const fullScript = this.buildExecutableScript(script, callerAuthored);
+      const panelSession = await this.readHeartbeat();
+      const panelSessionId = panelSession?.panelSessionId || '';
+      let fullScript = this.buildExecutableScript(script, callerAuthored);
+      if (nativeResultFile) {
+        const receiptPrelude = `function MCP_publishNativeResult(value){try{var f=new File(${JSON.stringify(nativeResultFile)});if(!f.open('w'))return false;f.write(JSON.stringify({commandId:${JSON.stringify(commandId)},sessionId:${JSON.stringify(this.sessionId)},panelSessionId:${JSON.stringify(panelSessionId)},complete:true,result:value}));f.close();return true;}catch(e){try{f.close();}catch(closeError){}return false;}}\n`;
+        fullScript = fullScript.replace(EXTENDSCRIPT_HELPERS, EXTENDSCRIPT_HELPERS + receiptPrelude);
+      }
 
       // Write command to file. Include timeoutMs so the CEP/UXP panel can extend its own
       // execution watchdog to match — otherwise the panel's default (45s) kills long batch
@@ -1230,8 +1243,6 @@ export class PremiereProBridge implements PremiereProTransport {
       //
       // The scratch name must not itself look like a command to the panel, which matches on
       // a "command-" prefix; a leading dot keeps it out of that test.
-      const panelSession = await this.readHeartbeat();
-      const panelSessionId = panelSession?.panelSessionId || '';
       await fs.writeFile(commandStaging, JSON.stringify({
         id: commandId,
         sessionId: this.sessionId,
@@ -1245,7 +1256,8 @@ export class PremiereProBridge implements PremiereProTransport {
       // Wait for response (in a real implementation, this would be handled by the UXP plugin).
       // Batch operations pass a larger timeout because a single round-trip does the work of
       // dozens of individual calls inside one ExtendScript pass.
-      return await this.waitForResponse(responseFile, timeoutMs, activeFile, abortController.signal, panelSessionId);
+      const responseWaitMs = (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) ? timeoutMs : 60000) + Math.max(0, responseGraceMs);
+      return await this.waitForResponse(responseFile, responseWaitMs, activeFile, abortController.signal, panelSessionId, nativeResultFile, commandId);
     } catch (error) {
       this.logger.error(`Failed to execute script: ${error}`);
       throw error;
@@ -1259,10 +1271,12 @@ export class PremiereProBridge implements PremiereProTransport {
       // command file is the one that matters here, because a stale command still executes.
       await fs.unlink(commandStaging).catch(() => {});
       this.pendingRequests.delete(commandId);
+      options.signal?.removeEventListener('abort', abortFromCaller);
       await fs.unlink(commandFile).catch(() => {});
       await fs.unlink(responseFile).catch(() => {});
       await fs.unlink(activeFile).catch(() => {});
       await fs.unlink(claimFile).catch(() => {});
+      if (nativeResultFile) await fs.unlink(nativeResultFile).catch(() => {});
     }
   }
 
@@ -1281,7 +1295,7 @@ export class PremiereProBridge implements PremiereProTransport {
     }
   }
 
-  private async waitForResponse(responseFile: string, timeout = 60000, activeFile?: string, signal?: AbortSignal, panelSessionId = ''): Promise<any> {
+  private async waitForResponse(responseFile: string, timeout = 60000, activeFile?: string, signal?: AbortSignal, panelSessionId = '', nativeResultFile?: string, commandId = ''): Promise<any> {
     const startTime = Date.now();
     // A response that exists but will not parse is a different failure from one that has
     // not arrived, and reporting it as the latter sends the reader to check whether
@@ -1294,6 +1308,15 @@ export class PremiereProBridge implements PremiereProTransport {
 
     while (Date.now() - startTime < timeout) {
       if (signal?.aborted) throw new Error('MCP bridge session ended; pending request was cancelled.');
+      if (nativeResultFile) {
+        try {
+          const receipt = JSON.parse(await fs.readFile(nativeResultFile, 'utf8')) as { commandId?: unknown; sessionId?: unknown; panelSessionId?: unknown; complete?: unknown; result?: unknown };
+          if (receipt.commandId === commandId && receipt.sessionId === this.sessionId && receipt.panelSessionId === panelSessionId && receipt.complete === true) {
+            this.logger.info(`[bridge] stage=native_result_received command=${commandId}`);
+            return receipt.result;
+          }
+        } catch {}
+      }
       let raw: string | undefined;
       try {
         raw = await fs.readFile(responseFile, 'utf8');
@@ -1352,6 +1375,18 @@ export class PremiereProBridge implements PremiereProTransport {
       }
 
       await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
+    // Do one last read at the deadline. The 150ms poll sleep can cross the
+    // timeout boundary just as Premiere publishes its native Extract receipt.
+    if (nativeResultFile) {
+      try {
+        const receipt = JSON.parse(await fs.readFile(nativeResultFile, 'utf8')) as { commandId?: unknown; sessionId?: unknown; panelSessionId?: unknown; complete?: unknown; result?: unknown };
+        if (receipt.commandId === commandId && receipt.sessionId === this.sessionId && receipt.panelSessionId === panelSessionId && receipt.complete === true) {
+          this.logger.info(`[bridge] stage=native_result_received_at_deadline command=${commandId}`);
+          return receipt.result;
+        }
+      } catch {}
     }
 
     if (lastParseError) {

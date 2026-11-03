@@ -13,10 +13,13 @@ import type { MCPTool } from './types.js';
 export interface ToolContext {
   bridge: PremiereProTransport;
   logger: Logger;
+  signal?: AbortSignal | undefined;
   /** The full catalog, including tools this server only exposes via invoke_tool. */
   listTools(): MCPTool[];
   /** The subset advertised in tools/list under the active PREMIERE_MCP_TOOLSET. */
   listAdvertisedTools(): MCPTool[];
+  /** Optional API model analyzes the ranged word transcript for retake spans and selects the best attempt. */
+  analyzeRetakes?(cues: Array<{ index: number; start: number; end: number; text: string; whisperConfidence?: number }>, signal?: AbortSignal): Promise<Array<{ id: number; takes: Array<{ start_time: number; end_time: number }>; bestTakeIndex: number | null; confidence: number; reason: string }>>;
 }
 
 /** A tool declaration bound to the handler that implements it. */

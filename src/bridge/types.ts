@@ -26,7 +26,7 @@ export interface EnsureHostResult {
 }
 
 export interface PremiereProTransport {
-  executeScript(script: string, timeoutMs?: number, callerAuthored?: boolean): Promise<any>;
+  executeScript(script: string, timeoutMs?: number, callerAuthored?: boolean, responseGraceMs?: number, options?: { nativeResultReceipt?: boolean; signal?: AbortSignal | undefined }): Promise<any>;
   ensureHost?(options?: EnsureHostOptions): Promise<EnsureHostResult>;
   createProject(name: string, location: string): Promise<PremiereProProject>;
   openProject(path: string): Promise<PremiereProProject>;

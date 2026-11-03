@@ -1,9 +1,9 @@
 // Shared Premiere-side range removal. Both the MCP handler and panel test call this.
 // Use Premiere's native QE Extract command so the edit is performed as one ripple
 // operation across sync-locked tracks instead of iterating over every timeline clip.
-var MCP_removeRangeImplementation = 'native-extract-seconds-v2';
+var MCP_removeRangeImplementation = 'native-extract-seconds-receipt-v3';
 var MCP_removeRangeLastOperation = null;
-function MCP_removeRange(requestedStartTime, requestedEndTime) {
+function MCP_removeRange(requestedStartTime, requestedEndTime, publishNativeResult, batchResults, batchIndex, isFinalBatchItem) {
   var startedAt = new Date().getTime();
   var result = { success: false, status: 'preflight_failed', activeSequenceFound: false };
   var seq = null;
@@ -116,7 +116,17 @@ function MCP_removeRange(requestedStartTime, requestedEndTime) {
                       stateError = 'Premiere does not expose lock and Sync Lock controls for ' + spec.type + ' track ' + (ti + 1) + '; the timeline was not changed.';
                       break;
                     }
-                    trackStates.push({ track: qeTrack, type: spec.type, index: ti, locked: Boolean(qeTrack.isLocked()), syncLocked: Boolean(qeTrack.isSyncLocked()) });
+                    var wasLocked = Boolean(qeTrack.isLocked());
+                    var wasSyncLocked = Boolean(qeTrack.isSyncLocked());
+                    trackStates.push({
+                      track: qeTrack,
+                      type: spec.type,
+                      index: ti,
+                      locked: wasLocked,
+                      syncLocked: wasSyncLocked,
+                      lockChanged: wasLocked,
+                      syncLockChanged: !wasSyncLocked
+                    });
                   }
                 }
                 if (stateError) {
@@ -126,9 +136,9 @@ function MCP_removeRange(requestedStartTime, requestedEndTime) {
                   // make every audio/video track participate, then restore its state.
                   for (var pi = 0; pi < trackStates.length; pi++) {
                     var state = trackStates[pi];
-                    if (state.locked) state.track.setLock(0);
-                    state.track.setSyncLock(1);
-                    if (state.track.isLocked() || !state.track.isSyncLocked()) {
+                    if (state.lockChanged) state.track.setLock(0);
+                    if (state.syncLockChanged) state.track.setSyncLock(1);
+                    if ((state.lockChanged && state.track.isLocked()) || (state.syncLockChanged && !state.track.isSyncLocked())) {
                       stateError = 'Could not prepare ' + state.type + ' track ' + (state.index + 1) + ' for native Extract.';
                       break;
                     }
@@ -152,6 +162,22 @@ function MCP_removeRange(requestedStartTime, requestedEndTime) {
                     seq.setOutPoint(actualEnd);
                     editStarted = true;
                     qeSeq.extract();
+                    // Premiere has returned from its native Extract call, which is the
+                    // point where the requested edit has been applied. Publish now so
+                    // MCP does not need to wait for slower post-edit DOM checks or the
+                    // CEP evalScript callback. The normal response still contains the
+                    // detailed verification and restoration status when it is available.
+                    var earlyResult = { success: true, status: 'native_extract_returned', operation: 'Premiere native QE Extract', sequenceName: String(seq.name || ''), requestedStartTime: start, requestedEndTime: end, actualStartTime: actualStart, actualEndTime: actualEnd, removedDurationSeconds: actualEnd - actualStart, verified: false, confirmation: 'Premiere returned from native Extract; final duration and state restoration checks are continuing.' };
+                    if (publishNativeResult === 'single' && typeof MCP_publishNativeResult === 'function') {
+                      MCP_publishNativeResult(earlyResult);
+                    } else if (publishNativeResult === 'batch' && batchResults instanceof Array && batchIndex >= 0) {
+                      batchResults[batchIndex] = earlyResult;
+                      if (isFinalBatchItem === true && typeof MCP_publishNativeResult === 'function') {
+                        // ExtendScript's Date object in Premiere Pro 23 has no toISOString().
+                        // Publish the receipt using only JSON-compatible fields supported there.
+                        MCP_publishNativeResult({ success: true, result: JSON.stringify(batchResults) });
+                      }
+                    }
 
                     var afterDuration = seconds(seq.end);
                     var expectedDuration = duration - (actualEnd - actualStart);
@@ -186,8 +212,12 @@ function MCP_removeRange(requestedStartTime, requestedEndTime) {
     }
     for (var ri = trackStates.length - 1; ri >= 0; ri--) {
       var restoreState = trackStates[ri];
-      try { restoreState.track.setSyncLock(restoreState.syncLocked ? 1 : 0); } catch (eRestoreSync) { restoreErrors.push('Could not restore Sync Lock on ' + restoreState.type + ' track ' + (restoreState.index + 1) + '.'); }
-      try { restoreState.track.setLock(restoreState.locked ? 1 : 0); } catch (eRestoreLock) { restoreErrors.push('Could not restore lock on ' + restoreState.type + ' track ' + (restoreState.index + 1) + '.'); }
+      if (restoreState.syncLockChanged) {
+        try { restoreState.track.setSyncLock(restoreState.syncLocked ? 1 : 0); } catch (eRestoreSync) { restoreErrors.push('Could not restore Sync Lock on ' + restoreState.type + ' track ' + (restoreState.index + 1) + '.'); }
+      }
+      if (restoreState.lockChanged) {
+        try { restoreState.track.setLock(restoreState.locked ? 1 : 0); } catch (eRestoreLock) { restoreErrors.push('Could not restore lock on ' + restoreState.type + ' track ' + (restoreState.index + 1) + '.'); }
+      }
     }
     result.durationMs = new Date().getTime() - startedAt;
   }

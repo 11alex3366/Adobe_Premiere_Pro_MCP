@@ -78,3 +78,25 @@ async function generateSrt(ctx: ToolContext): Promise<Record<string, unknown>> {
     generationInFlight = false;
   }
 }
+
+/** Generate a word-level SRT for a bounded range without importing it again. */
+export async function generateSrtForRange(ctx: ToolContext, startTime: number, endTime: number): Promise<Record<string, unknown>> {
+  if (generationInFlight) {
+    return { success: false, status: 'busy', error: 'SRT generation is already in progress.' };
+  }
+  generationInFlight = true;
+  try {
+    const command = `__MCP_LOCAL_SRT_RETAKES__${encodeURIComponent(JSON.stringify({ start_time: startTime, end_time: endTime }))}`;
+    const result = await ctx.bridge.executeScript(`(function(){return ${JSON.stringify(command)};})()`, LOCAL_SRT_TIMEOUT_MS, false, 0, { signal: ctx.signal });
+    if (!result || typeof result !== 'object') {
+      return { success: false, status: 'invalid_response', error: 'The Premiere CEP extension returned no bounded SRT result.' };
+    }
+    return result as Record<string, unknown>;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.logger.error(`[remove_retakes] stage=srt_generation_failed ${message}`);
+    return { success: false, status: 'srt_generation_failed', error: message };
+  } finally {
+    generationInFlight = false;
+  }
+}

@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--compute", default="")
     parser.add_argument("--words-per-subtitle", type=int, default=1)
+    parser.add_argument("--metadata-out", default="", help="Optional JSON output with word timestamps and Whisper confidence values.")
     args = parser.parse_args()
     args.words_per_subtitle = max(1, min(15, args.words_per_subtitle))
     try:
@@ -71,11 +72,27 @@ def main():
         language = None if args.lang in ("", "auto") else args.lang
         segments, _ = model.transcribe(args.audio, word_timestamps=True, language=language)
         words = []
+        audio_segments = []
         for segment_index, segment in enumerate(segments):
+            segment_words = []
             for item in segment.words or []:
                 text = item.word.strip()
                 if text and item.start is not None and item.end is not None:
-                    words.append({"start": item.start, "end": item.end, "text": text, "segment": segment_index})
+                    probability = getattr(item, "probability", None)
+                    word = {"start": item.start, "end": item.end, "text": text, "segment": segment_index}
+                    if isinstance(probability, (int, float)):
+                        word["probability"] = float(probability)
+                    words.append(word)
+                    segment_words.append(word)
+            if segment_words:
+                audio_segments.append({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                    "avg_logprob": getattr(segment, "avg_logprob", None),
+                    "no_speech_prob": getattr(segment, "no_speech_prob", None),
+                    "word_count": len(segment_words),
+                })
             emit(type="progress", text=f"Transcribed through {segment.end:.0f} seconds…")
         if not words:
             raise RuntimeError("Whisper returned no word timestamps for this audio.")
@@ -83,6 +100,9 @@ def main():
         with open(args.out, "w", encoding="utf-8-sig", newline="\n") as output:
             for index, caption in enumerate(captions, 1):
                 output.write(f"{index}\n{format_time(caption['start'])} --> {format_time(caption['end'])}\n{caption['text']}\n\n")
+        if args.metadata_out:
+            with open(args.metadata_out, "w", encoding="utf-8") as metadata:
+                json.dump({"words": words, "segments": audio_segments}, metadata, ensure_ascii=False)
         emit(type="done", words=len(words), subtitles=len(captions), output=args.out)
         return 0
     except Exception as error:

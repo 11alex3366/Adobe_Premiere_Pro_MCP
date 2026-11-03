@@ -2,26 +2,77 @@
 // This file is loaded by CEP before local-srt.js invokes any of these functions.
 var MCP_SRT_TICKS = 254016000000;
 
+// Premiere builds may expose sequence.end as a Time object, tick count, or
+// tick-count string. Keep this conversion consistent with the other host tools.
+function MCP_SRT_seconds(value) {
+    if (value === null || typeof value === "undefined") return NaN;
+    try {
+        if (typeof value.seconds !== "undefined") {
+            var seconds = Number(value.seconds);
+            if (isFinite(seconds)) return seconds;
+        }
+    } catch (eSeconds) {}
+    try {
+        if (typeof value.ticks !== "undefined") {
+            var ticks = Number(value.ticks);
+            if (isFinite(ticks)) return ticks / MCP_SRT_TICKS;
+        }
+    } catch (eTicks) {}
+    if (typeof value === "string") {
+        var stringTicks = Number(value);
+        return isFinite(stringTicks) ? stringTicks / MCP_SRT_TICKS : NaN;
+    }
+    if (typeof value === "number") {
+        // A bare number returned by Premiere's sequence.end property is ticks.
+        return isFinite(value) ? value / MCP_SRT_TICKS : NaN;
+    }
+    return NaN;
+}
+
 function MCP_SRT_time(seconds) {
     var t = new Time();
     t.seconds = seconds;
     return t;
 }
 
-function MCP_SRT_exportRange(outPath, presetPath) {
+function MCP_SRT_exportRange(outPath, presetPath, requestedStart, requestedEnd) {
     try {
         var seq = app.project.activeSequence;
         if (!seq) return "error: no active sequence";
         var inT = 0, outT = 0;
+        var priorIn = Number(seq.getInPoint());
+        var priorOut = Number(seq.getOutPoint());
+        var hasPriorMarks = isFinite(priorIn) && isFinite(priorOut);
         try {
-            inT = seq.getInPointAsTime().seconds;
-            outT = seq.getOutPointAsTime().seconds;
+            if (typeof requestedStart === "number" && typeof requestedEnd === "number") {
+                var duration = MCP_SRT_seconds(seq.end);
+                if (!isFinite(requestedStart) || !isFinite(requestedEnd) || !isFinite(duration) || requestedStart < 0 || requestedEnd <= requestedStart || requestedEnd > duration + 0.000001) {
+                    return "error: requested In/Out range is invalid or outside the active sequence (In=" + requestedStart + "s, Out=" + requestedEnd + "s, duration=" + duration + "s)";
+                }
+                inT = requestedStart;
+                outT = requestedEnd;
+                seq.setInPoint(inT);
+                seq.setOutPoint(outT);
+            } else {
+                inT = seq.getInPointAsTime().seconds;
+                outT = seq.getOutPointAsTime().seconds;
+            }
         } catch (e) {}
         var mode = 1;
         if (!(outT > inT)) { mode = 0; inT = 0; }
         seq.exportAsMediaDirect(outPath, presetPath, mode);
-        return "ok|" + inT + "|" + outT + "|" + seq.name;
+        if (typeof requestedStart === "number" && hasPriorMarks) {
+            try { seq.setInPoint(priorIn); } catch (restoreInError) {}
+            try { seq.setOutPoint(priorOut); } catch (restoreOutError) {}
+        }
+        return "ok|" + inT + "|" + outT + "|" + seq.name + "|" + seq.sequenceID;
     } catch (e) {
+        try {
+            if (typeof requestedStart === "number" && hasPriorMarks && app.project && app.project.activeSequence) {
+                app.project.activeSequence.setInPoint(priorIn);
+                app.project.activeSequence.setOutPoint(priorOut);
+            }
+        } catch (restoreError) {}
         return "error: " + e;
     }
 }
