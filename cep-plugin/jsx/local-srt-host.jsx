@@ -2,6 +2,35 @@
 // This file is loaded by CEP before local-srt.js invokes any of these functions.
 var MCP_SRT_TICKS = 254016000000;
 
+// CEP calls this JSX directly with CSInterface.evalScript, outside the MCP
+// bridge's JSON polyfill wrapper. ExtendScript on Premiere 23 may not expose
+// JSON.stringify, so serialize the plain result objects used by this host here.
+function MCP_SRT_stringify(value) {
+    if (value === null || typeof value === "undefined") return "null";
+    var kind = typeof value;
+    if (kind == "string") {
+        return "\"" + String(value).replace(/\\/g, "\\\\").replace(/\"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t") + "\"";
+    }
+    if (kind == "number") return isFinite(value) ? String(value) : "null";
+    if (kind == "boolean") return value ? "true" : "false";
+    if (value instanceof Array) {
+        var items = [];
+        for (var ai = 0; ai < value.length; ai++) items.push(MCP_SRT_stringify(value[ai]));
+        return "[" + items.join(",") + "]";
+    }
+    if (kind == "object") {
+        var properties = [];
+        for (var key in value) {
+            if (!value.hasOwnProperty || value.hasOwnProperty(key)) {
+                var item = value[key];
+                if (typeof item != "undefined" && typeof item != "function") properties.push(MCP_SRT_stringify(key) + ":" + MCP_SRT_stringify(item));
+            }
+        }
+        return "{" + properties.join(",") + "}";
+    }
+    return "null";
+}
+
 // Premiere builds may expose sequence.end as a Time object, tick count, or
 // tick-count string. Keep this conversion consistent with the other host tools.
 function MCP_SRT_seconds(value) {
@@ -77,6 +106,63 @@ function MCP_SRT_exportRange(outPath, presetPath, requestedStart, requestedEnd) 
     }
 }
 
+// Return the source clip intervals on the busiest video track in the requested
+// sequence range. Audio is exported from the sequence for each interval so that
+// linked audio, mixers, and effects keep Premiere's normal timeline behavior.
+function MCP_SRT_getClipRanges(requestedStart, requestedEnd) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return MCP_SRT_stringify({ success: false, error: "No active sequence" });
+        var duration = MCP_SRT_seconds(seq.end);
+        var start = 0, end = duration;
+        if (typeof requestedStart === "number" && typeof requestedEnd === "number") {
+            if (!isFinite(requestedStart) || !isFinite(requestedEnd) || requestedStart < 0 || requestedEnd <= requestedStart || requestedEnd > duration + 0.000001) {
+                return MCP_SRT_stringify({ success: false, error: "Requested In/Out range is invalid or outside the active sequence" });
+            }
+            start = requestedStart; end = requestedEnd;
+        } else {
+            try {
+                var markedIn = Number(seq.getInPointAsTime().seconds);
+                var markedOut = Number(seq.getOutPointAsTime().seconds);
+                if (isFinite(markedIn) && isFinite(markedOut) && markedOut > markedIn) {
+                    start = Math.max(0, markedIn); end = Math.min(duration, markedOut);
+                }
+            } catch (markError) {}
+        }
+        if (!(end > start)) return MCP_SRT_stringify({ success: false, error: "The active sequence has no usable duration in this range" });
+
+        function collectTracks(collection, type) {
+            var best = null;
+            for (var trackIndex = 0; trackIndex < collection.numTracks; trackIndex++) {
+                var track = collection[trackIndex], ranges = [], coverage = 0;
+                if (!track || !track.clips) continue;
+                for (var clipIndex = 0; clipIndex < track.clips.numItems; clipIndex++) {
+                    var clip = track.clips[clipIndex];
+                    var clipStart = NaN, clipEnd = NaN;
+                    try { clipStart = MCP_SRT_seconds(clip.start); clipEnd = MCP_SRT_seconds(clip.end); } catch (timeError) {}
+                    if (!isFinite(clipStart) || !isFinite(clipEnd)) continue;
+                    clipStart = Math.max(start, clipStart); clipEnd = Math.min(end, clipEnd);
+                    if (clipEnd <= clipStart) continue;
+                    ranges.push({ start: clipStart, end: clipEnd, name: String(clip.name || "") });
+                    coverage += clipEnd - clipStart;
+                }
+                if (ranges.length && (!best || ranges.length > best.ranges.length || (ranges.length === best.ranges.length && coverage > best.coverage))) {
+                    best = { track: trackIndex + 1, type: type, ranges: ranges, coverage: coverage };
+                }
+            }
+            return best;
+        }
+
+        var selected = collectTracks(seq.videoTracks, "video");
+        if (!selected) selected = collectTracks(seq.audioTracks, "audio");
+        if (!selected || !selected.ranges.length) return MCP_SRT_stringify({ success: false, error: "No timeline clips were found in the active sequence In/Out range" });
+        selected.ranges.sort(function (a, b) { return a.start - b.start; });
+        return MCP_SRT_stringify({ success: true, sequenceName: String(seq.name), sequenceId: String(seq.sequenceID), start: start, end: end, trackType: selected.type, track: selected.track, clips: selected.ranges });
+    } catch (e) {
+        return MCP_SRT_stringify({ success: false, error: String(e) });
+    }
+}
+
 function MCP_SRT_findItemByPath(parent, normalizedPath) {
     for (var i = 0; i < parent.children.numItems; i++) {
         var item = parent.children[i];
@@ -119,9 +205,9 @@ function MCP_SRT_importCaptions(srtPath, startAt, format) {
 function MCP_SRT_chooseGraphicsTrack() {
     try {
         var seq = app.project.activeSequence;
-        if (!seq) return JSON.stringify({ success: false, error: "No active sequence" });
+        if (!seq) return MCP_SRT_stringify({ success: false, error: "No active sequence" });
         var count = seq.videoTracks.numTracks;
-        if (count < 1) return JSON.stringify({ success: false, error: "The active sequence has no video track" });
+        if (count < 1) return MCP_SRT_stringify({ success: false, error: "The active sequence has no video track" });
         var index = count - 1;
         var top = seq.videoTracks[index];
         if (top && top.clips && top.clips.numItems > 0) {
@@ -132,9 +218,9 @@ function MCP_SRT_chooseGraphicsTrack() {
             if (seq.videoTracks.numTracks !== count + 1) throw new Error("Premiere did not add a video track");
             index = count;
         }
-        return JSON.stringify({ success: true, index: index, track: index + 1, created: index === count });
+        return MCP_SRT_stringify({ success: true, index: index, track: index + 1, created: index === count });
     } catch (e) {
-        return JSON.stringify({ success: false, error: String(e) });
+        return MCP_SRT_stringify({ success: false, error: String(e) });
     }
 }
 

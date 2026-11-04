@@ -46,7 +46,8 @@
         return new Promise(function (resolve, reject) {
             cs.evalScript(script, function (raw) {
                 if (!raw || raw === 'EvalScript error.' || raw === 'EvalScript error') {
-                    return reject(new Error('Premiere failed to run the SRT host script. Restart Premiere so it loads jsx/local-srt-host.jsx, then reopen MCP Bridge (CEP).'));
+                    var functionName = /^\s*([A-Za-z_$][\w$]*)\s*\(/.exec(script);
+                    return reject(new Error('Premiere ExtendScript failed' + (functionName ? ' while calling ' + functionName[1] : '') + ': ' + (raw || 'empty response') + '. The CEP panel could not get a result from the SRT host script.'));
                 }
                 try { resolve(JSON.parse(raw)); } catch (e) { reject(new Error(String(raw))); }
             });
@@ -56,6 +57,16 @@
         var location = decodeURIComponent(window.location.pathname);
         if (/^\/[A-Za-z]:/.test(location)) location = location.slice(1);
         return path.dirname(location);
+    }
+    function ensureSrtHostFunction(functionName) {
+        return new Promise(function (resolve, reject) {
+            var hostPath = path.join(extensionDirectory(), 'jsx', 'local-srt-host.jsx');
+            var script = '(function(){try{if(typeof ' + functionName + ' !== "function") $.evalFile(' + JSON.stringify(hostPath) + ');return typeof ' + functionName + ' === "function" ? "loaded" : "missing";}catch(e){return "load_error:" + String(e);}})()';
+            cs.evalScript(script, function (raw) {
+                if (String(raw) === 'loaded') return resolve();
+                reject(new Error('Could not load the Premiere SRT host function ' + functionName + ' from jsx/local-srt-host.jsx (' + String(raw || 'empty response') + '). Reopen MCP Bridge (CEP) and try again.'));
+            });
+        });
     }
     function option(select, label, value) {
         var el = document.createElement('option'); el.textContent = label; el.value = value; select.appendChild(el);
@@ -133,12 +144,15 @@
             poll();
         });
     }
-    function transcribe(audio, output, metadataPath, wordsPerSubtitle) {
+    function transcribe(audio, output, metadataPath, wordsPerSubtitle, jobsManifest) {
         return new Promise(function (resolve, reject) {
             var python = $('srtPython').value.trim() || 'python';
-            var args = [path.join(extensionDirectory(), 'python', 'srt_worker.py'), '--audio', audio, '--out', output,
+            var args = [path.join(extensionDirectory(), 'python', 'srt_worker.py')];
+            if (jobsManifest) args.push('--jobs-manifest', jobsManifest);
+            else args.push('--audio', audio);
+            args.push('--out', output,
                 '--model', $('srtModel').value.trim() || 'large-v3', '--lang', $('srtLanguage').value.trim() || 'auto',
-                '--device', $('srtDevice').value, '--words-per-subtitle', wordsPerSubtitle ? String(wordsPerSubtitle) : $('srtWords').value];
+                '--device', $('srtDevice').value, '--words-per-subtitle', wordsPerSubtitle ? String(wordsPerSubtitle) : $('srtWords').value);
             if (metadataPath) args.push('--metadata-out', metadataPath);
             var child;
             try { child = childProcess.spawn(python, args, { windowsHide: true, env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) }); activeWorker = child; }
@@ -225,7 +239,7 @@
         busy = true; $('srtGenerateButton').disabled = true; $('srtGenerateButton').textContent = 'Processing…'; result('');
         var work = path.join(os.tmpdir(), 'premiere-mcp-local-srt');
         var token = Date.now() + '-' + Math.floor(Math.random() * 1000000);
-        var audio = path.join(work, token + '.mp3'); var output = path.join(work, token + '.srt');
+        var output = path.join(work, token + '.srt');
         var metadataPath = options.transcribeOnly ? path.join(work, token + '.json') : '';
         var sequenceInfo = null, transcriptionStarted = false, srtGenerated = false, finalResult = null;
         try { fs.mkdirSync(work, { recursive: true }); } catch (error) {
@@ -233,17 +247,42 @@
             var directoryError = { success: false, status: 'local_io_error', activeSequenceFound: false, transcriptionStarted: false, srtGenerated: false, subtitlesImported: false, error: error.message };
             status(error.message, true); finishCallback(onComplete, directoryError); return false;
         }
-        status('Exporting the active sequence In/Out range to temporary audio…');
-        evalRawHost('MCP_SRT_exportRange(' + JSON.stringify(audio) + ',' + JSON.stringify(audioPresetPath) +
-            (typeof options.startTime === 'number' && typeof options.endTime === 'number' ? ',' + options.startTime + ',' + options.endTime : '') + ')', 'export the active sequence audio').then(function (raw) {
-            var parts = raw.split('|');
-            if (parts[0] !== 'ok') throw new Error(raw || 'Premiere could not export audio.');
-            sequenceInfo = { start: Number(parts[1]) || 0, end: Number(parts[2]) || 0, name: parts[3] || '', sequenceId: parts[4] || '' };
-            return waitForExport(audio, Date.now() + 180000);
+        var audioFiles = [];
+        var jobsManifest = path.join(work, token + '-clips.json');
+        var exportJobs = [];
+        status('Finding sequence clips in the active In/Out range…');
+        var rangeArgs = typeof options.startTime === 'number' && typeof options.endTime === 'number'
+            ? options.startTime + ',' + options.endTime
+            : 'null,null';
+        var rangeScript = '(function(){try{if(typeof MCP_SRT_getClipRanges!=="function")return "MCP_SRT_HOST_ERROR|MCP_SRT_getClipRanges is not loaded";return MCP_SRT_getClipRanges(' + rangeArgs + ');}catch(e){return "MCP_SRT_HOST_ERROR|"+String(e);}})()';
+        ensureSrtHostFunction('MCP_SRT_getClipRanges').then(function () {
+            return evalHost(rangeScript);
+        }).then(function (clipInfo) {
+            if (!clipInfo || clipInfo.success !== true || !clipInfo.clips || !clipInfo.clips.length) {
+                throw new Error((clipInfo && clipInfo.error) || 'No clips were found in the active sequence range.');
+            }
+            sequenceInfo = { start: Number(clipInfo.start) || 0, end: Number(clipInfo.end) || 0, name: clipInfo.sequenceName || '', sequenceId: clipInfo.sequenceId || '', clipTrackType: clipInfo.trackType, clipTrack: clipInfo.track, clipCount: clipInfo.clips.length };
+            clipInfo.clips.forEach(function (clip, index) {
+                var audio = path.join(work, token + '-clip-' + ('0000' + (index + 1)).slice(-4) + '.mp3');
+                audioFiles.push(audio);
+                exportJobs.push({ audio: audio, start: Number(clip.start), end: Number(clip.end), offset: Number(clip.start) - sequenceInfo.start, name: clip.name || '' });
+            });
+            status('Exporting ' + exportJobs.length + ' clips separately…');
+            return exportJobs.reduce(function (promise, job, index) {
+                return promise.then(function () {
+                    status('Exporting clip ' + (index + 1) + '/' + exportJobs.length + '…');
+                    return evalRawHost('MCP_SRT_exportRange(' + JSON.stringify(job.audio) + ',' + JSON.stringify(audioPresetPath) + ',' + job.start + ',' + job.end + ')', 'export clip ' + (index + 1)).then(function (raw) {
+                        var parts = raw.split('|');
+                        if (parts[0] !== 'ok') throw new Error(raw || ('Premiere could not export clip ' + (index + 1) + '.'));
+                        return waitForExport(job.audio, Date.now() + 180000);
+                    });
+                });
+            }, Promise.resolve());
         }).then(function () {
-            status('Starting local Whisper transcription…');
+            fs.writeFileSync(jobsManifest, JSON.stringify({ jobs: exportJobs.map(function (job) { return { audio: job.audio, offset: job.offset, duration: job.end - job.start, name: job.name }; }) }), 'utf8');
+            status('Starting local Whisper transcription for ' + exportJobs.length + ' clips…');
             transcriptionStarted = true;
-            return transcribe(audio, output, metadataPath, options.wordsPerSubtitle);
+            return transcribe(null, output, metadataPath, options.wordsPerSubtitle, jobsManifest);
         }).then(function (transcription) {
             var srt = fs.readFileSync(output, 'utf8'); var cues = parseSrt(srt);
             if (!cues.length) throw new Error('The transcription did not produce a valid SRT file.');
@@ -279,6 +318,7 @@
                     srtGenerated: true,
                     subtitlesImported: false,
                     wordCount: summary.words,
+                    clipsTranscribed: sequenceInfo.clipCount,
                     srtPath: output,
                     whisperMetadataPath: metadataPath,
                     sourceRangeStart: sequenceInfo.start,
@@ -309,6 +349,7 @@
                 subtitlesPlaced: importedCount,
                 subtitleCount: summary.count,
                 wordsTranscribed: summary.words,
+                clipsTranscribed: sequenceInfo.clipCount,
                 srtPath: output,
                 graphicsTrack: sequenceInfo.graphicsTrack || null,
                 createdGraphicsTrack: !!sequenceInfo.createdGraphicsTrack,
@@ -331,7 +372,8 @@
                 error: message
             };
         }).then(function () {
-                try { if (fs.existsSync(audio)) fs.unlinkSync(audio); } catch (e) {}
+                audioFiles.forEach(function (audioFile) { try { if (fs.existsSync(audioFile)) fs.unlinkSync(audioFile); } catch (e) {} });
+                try { if (fs.existsSync(jobsManifest)) fs.unlinkSync(jobsManifest); } catch (manifestCleanupError) {}
                 busy = false; $('srtGenerateButton').disabled = false; $('srtGenerateButton').textContent = 'Generate SRT and Import';
                 finishCallback(onComplete, finalResult || { success: false, status: 'failed', activeSequenceFound: !!sequenceInfo, transcriptionStarted: transcriptionStarted, srtGenerated: srtGenerated, subtitlesImported: false, error: 'SRT generation ended without a result.' });
             });

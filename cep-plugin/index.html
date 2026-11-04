@@ -698,7 +698,7 @@
             <label for="srtTextPreset">Text preset (.mogrt)</label>
             <select id="srtTextPreset"><option value="">Native caption track</option></select>
             <div class="button-row"><button class="primary" id="srtGenerateButton" type="button">Generate SRT and Import</button></div>
-            <div class="micro-copy srt-status" id="srtStatus" role="status" aria-live="polite">Set Python and install faster-whisper, then generate from the active sequence. In/Out is used when present.</div>
+            <div class="micro-copy srt-status" id="srtStatus" role="status" aria-live="polite">Set Python and install faster-whisper. Audio is exported and transcribed clip by clip, then combined into one SRT. In/Out is used when present.</div>
             <div class="micro-copy srt-status" id="srtResult"></div>
         </section>
 
@@ -737,7 +737,7 @@
             </div>
             <div class="micro-copy">This saved provider and model are used only to analyze retakes. Add its key and choose a model with Add / Manage API.</div>
             <div class="button-row"><button class="primary" id="removeRetakesButton" type="button">Remove Retakes</button><button class="secondary" id="removeRetakesStop" type="button" disabled>Stop</button></div>
-            <div class="micro-copy srt-status" id="removeRetakesStatus" role="status" aria-live="polite">Generates a local word-level SRT and removes only confident repeated takes.</div>
+            <div class="micro-copy srt-status" id="removeRetakesStatus" role="status" aria-live="polite">Transcribes clips separately within In/Out, combines their word-level SRT, and removes only confident repeated takes.</div>
         </section>
 
         <section class="panel">
