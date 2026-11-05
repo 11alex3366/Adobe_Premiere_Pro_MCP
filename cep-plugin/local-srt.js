@@ -23,6 +23,9 @@
         });
     }
     settings.forEach(function (id) { remember($(id)); });
+    // Retake analysis consumes word-level cue times, so always emit one word per cue.
+    $('srtWords').value = '1';
+    $('srtWords').disabled = true;
     $('srtWords').addEventListener('input', function () { $('srtWordsValue').textContent = this.value; });
     $('srtWordsValue').textContent = $('srtWords').value;
 
@@ -138,7 +141,7 @@
             var python = $('srtPython').value.trim() || 'python';
             var args = [path.join(extensionDirectory(), 'python', 'srt_worker.py'), '--audio', audio, '--out', output,
                 '--model', $('srtModel').value.trim() || 'large-v3', '--lang', $('srtLanguage').value.trim() || 'auto',
-                '--device', $('srtDevice').value, '--words-per-subtitle', wordsPerSubtitle ? String(wordsPerSubtitle) : $('srtWords').value];
+                '--device', $('srtDevice').value, '--words-per-subtitle', '1'];
             if (metadataPath) args.push('--metadata-out', metadataPath);
             var child;
             try { child = childProcess.spawn(python, args, { windowsHide: true, env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) }); activeWorker = child; }
@@ -248,8 +251,13 @@
             var srt = fs.readFileSync(output, 'utf8'); var cues = parseSrt(srt);
             if (!cues.length) throw new Error('The transcription did not produce a valid SRT file.');
             srtGenerated = true;
+            var passSummary = {
+                secondPassWindowsReplaced: transcription.secondPassWindowsReplaced || 0,
+                thirdPassRegions: transcription.thirdPassRegions || 0,
+                thirdPassWindowsReplaced: transcription.thirdPassWindowsReplaced || 0
+            };
             if (options.transcribeOnly) {
-                return { placed: { success: true, placed: 0 }, count: cues.length, words: transcription.words || 0 };
+                return Object.assign({ placed: { success: true, placed: 0 }, count: cues.length, words: transcription.words || 0 }, passSummary);
             }
             if ($('srtTextPreset').value) {
                 status('Checking the top video track for a safe placement…');
@@ -259,10 +267,10 @@
                     sequenceInfo.createdGraphicsTrack = track.created;
                     return importGraphics(cues, $('srtTextPreset').value, track.index, sequenceInfo.start);
                 })
-                    .then(function (placed) { return { placed: placed, count: cues.length, words: transcription.words || 0 }; });
+                    .then(function (placed) { return Object.assign({ placed: placed, count: cues.length, words: transcription.words || 0 }, passSummary); });
             }
             status('Importing SRT and creating a native caption track…');
-            return importNative(output, sequenceInfo.start).then(function (placed) { return { placed: placed, count: cues.length, words: transcription.words || 0 }; });
+            return importNative(output, sequenceInfo.start).then(function (placed) { return Object.assign({ placed: placed, count: cues.length, words: transcription.words || 0 }, passSummary); });
         }).then(function (summary) {
             var placement = summary.placed;
             var importedCount = placement && typeof placement.placed === 'number' ? placement.placed : (placement && placement.success ? summary.count : 0);
@@ -285,8 +293,8 @@
                     sourceRangeEnd: sequenceInfo.end
                 };
             } else if (placement && placement.success) {
-                status('Finished. ' + (placement.placed || summary.count) + ' subtitles placed on the active sequence' + (sequenceInfo.graphicsTrack ? ' on V' + sequenceInfo.graphicsTrack + (sequenceInfo.createdGraphicsTrack ? ' (new track).' : '.') : '.'));
-                result('SRT: ' + output + ' · Segments: ' + summary.count + ' · Words: ' + summary.words);
+                status('Finished. ' + (placement.placed || summary.count) + ' one-word subtitles placed on the active sequence' + (sequenceInfo.graphicsTrack ? ' on V' + sequenceInfo.graphicsTrack + (sequenceInfo.createdGraphicsTrack ? ' (new track).' : '.') : '.'));
+                result('SRT: ' + output + ' · Words: ' + summary.words + (summary.secondPassWindowsReplaced !== undefined ? ' · 5s windows improved: ' + summary.secondPassWindowsReplaced : '') + (summary.thirdPassRegions !== undefined ? ' · Recheck regions: ' + summary.thirdPassRegions : ''));
             } else if (placement && placement.imported) {
                 status('SRT generated and imported, but Premiere did not confirm timeline placement.', true);
                 result('SRT: ' + output + ' · ' + (placement.message || 'Check the active sequence.'));

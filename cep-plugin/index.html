@@ -692,13 +692,13 @@
             <select id="srtDevice"><option value="cpu">CPU</option><option value="cuda">GPU (CUDA)</option></select>
             <label for="srtLanguage">Language</label>
             <input type="text" id="srtLanguage" placeholder="auto (or ar, en, …)">
-            <label for="srtWords">Words per subtitle <span id="srtWordsValue">1</span></label>
+            <label for="srtWords">Words per subtitle <span id="srtWordsValue">1</span> (fixed for word-level timing)</label>
             <div class="range-row"><input id="srtWords" type="range" min="1" max="15" value="1" aria-label="Words per subtitle"></div>
             <div class="micro-copy" id="srtAudioPresetStatus">Finding Premiere’s MP3/WAV audio export preset…</div>
             <label for="srtTextPreset">Text preset (.mogrt)</label>
             <select id="srtTextPreset"><option value="">Native caption track</option></select>
             <div class="button-row"><button class="primary" id="srtGenerateButton" type="button">Generate SRT and Import</button></div>
-            <div class="micro-copy srt-status" id="srtStatus" role="status" aria-live="polite">Set Python and install faster-whisper, then generate from the active sequence. In/Out is used when present.</div>
+            <div class="micro-copy srt-status" id="srtStatus" role="status" aria-live="polite">Three local Whisper passes: 40s/2s overlap, 5s/1s overlap, then gap and long-word checks. Final SRT has one word per cue.</div>
             <div class="micro-copy srt-status" id="srtResult"></div>
         </section>
 
